@@ -1,0 +1,35 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "zemen-api",
+  "main": "server/src/worker.js",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "DEFAULT_CURRENCY": "ETB",
+    "DEV_MODE": "false"
+  },
+  // better-sqlite3 (native) and pg cannot run on Workers — the D1
+  // driver replaces them, so these imports are stubbed at build time.
+  "alias": {
+    "better-sqlite3": "./server/src/worker-stubs/sqlite-stub.js",
+    "pg": "./server/src/worker-stubs/pg-stub.js",
+    // iconv-lite's `browser` field breaks its Node code path under
+    // nodejs_compat (see the stub's header comment) — replace it with
+    // a minimal TextDecoder-based implementation.
+    "iconv-lite": "./server/src/worker-stubs/iconv-lite-stub.cjs"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zemen-db",
+      "database_id": "a4a08056-6ccf-44d0-9195-edcf6a5226e5"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "UPLOADS",
+      "bucket_name": "zemen-uploads"
+    }
+  ]
+}

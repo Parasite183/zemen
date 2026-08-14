@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.log
+
+# local storage & uploads
+server/data/
+server/uploads/*
+!server/uploads/.gitkeep
+
+# environment
+.env
+.env.local
+
+# Cloudflare
+.wrangler/
+.wrangler-dist/
+server/seed-d1.sql
+
+# generated test artifacts
+server/scripts/shots/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

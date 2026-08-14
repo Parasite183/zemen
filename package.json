@@ -1,0 +1,32 @@
+{
+  "name": "zemen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zemen (ዘመን) — a portable trust and transaction-verification platform for people and small businesses in economies with weak formal credit infrastructure.",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "setup": "npm install",
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm run dev -w server",
+    "dev:web": "npm run dev -w web",
+    "seed": "npm run seed -w server",
+    "build": "npm run build -w web",
+    "start": "npm run start -w server",
+    "test": "npm test -w server",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "deploy": "node scripts/deploy-cloudflare.mjs",
+    "deploy:api": "wrangler deploy",
+    "deploy:web": "node scripts/deploy-cloudflare.mjs",
+    "deploy:seed": "node server/scripts/dump-seed-sql.mjs && wrangler d1 execute zemen-db --remote --file=server/seed-d1.sql"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "puppeteer-core": "^25.5.0",
+    "wrangler": "^4.123.0"
+  }
+}

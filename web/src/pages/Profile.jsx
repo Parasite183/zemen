@@ -1,0 +1,145 @@
+import { useEffect, useState, useRef } from 'react';
+import { Link } from 'react-router-dom';
+import { ShieldCheck, FileUp, FileText, Copy, Check, ShieldAlert, Scale } from 'lucide-react';
+import { api } from '../api.js';
+import { useAuth } from '../App.jsx';
+import { useI18n } from '../i18n/index.jsx';
+import { Card, Stat, Avatar, VerifiedBadge, Button, Spinner, ErrorBox, Chip } from '../components/ui.jsx';
+import { money, pct, shortDate } from '../lib.js';
+
+export default function Profile() {
+  const { t } = useI18n();
+  const { user, refresh } = useAuth();
+  const fileRef = useRef();
+  const [rep, setRep] = useState(null);
+  const [reportToken, setReportToken] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+  const [flags, setFlags] = useState([]);
+
+  useEffect(() => {
+    api('/api/auth/me').then(({ user, reputation }) => setRep(reputation));
+    api('/api/me/report-token').then(({ reportToken }) => setReportToken(reportToken));
+    if (user.is_moderator) {
+      api(`/api/users/${user.id}`).then((d) => setFlags(d.flags || [])).catch(() => {});
+    }
+  }, [user.id, user.is_moderator]);
+
+  if (!rep) return <Spinner />;
+
+  const reportUrl = `${window.location.origin}/r/${reportToken}`;
+
+  const uploadId = async (file) => {
+    setUploading(true);
+    setError('');
+    try {
+      const fd = new FormData();
+      fd.append('document', file);
+      const res = await fetch('/api/me/id-document', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${localStorage.getItem('zemen.token')}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Upload failed');
+      await refresh();
+      const me = await api('/api/auth/me');
+      setRep(me.reputation);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const copyReport = async () => {
+    try {
+      await navigator.clipboard.writeText(reportUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard unavailable */ }
+  };
+
+  return (
+    <div className="mx-auto max-w-md space-y-4">
+      <Card className="text-center">
+        <div className="flex justify-center"><Avatar name={user.name} size={72} /></div>
+        <h1 className="mt-3 text-lg font-bold">{user.name}</h1>
+        <div className="mt-1 text-xs capitalize text-ink-soft">
+          {t(`onb.categories.${user.category}`) || user.category || '—'} · {user.phone}
+        </div>
+        <div className="mt-2 flex items-center justify-center">
+          <VerifiedBadge status={user.id_verification_status} />
+        </div>
+      </Card>
+
+      {user.id_verification_status !== 'verified' && (
+        <Card>
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-soft text-brand"><ShieldCheck size={18} /></div>
+            <div className="flex-1">
+              <div className="text-sm font-bold">{t('profile.verifyCta')}</div>
+              <div className="mt-1 text-xs text-ink-soft">
+                {user.id_verification_status === 'pending' ? t('profile.uploadDone') : ''}
+              </div>
+              <input ref={fileRef} type="file" accept="image/*,.pdf,.heic" className="hidden"
+                onChange={(e) => e.target.files[0] && uploadId(e.target.files[0])} />
+              <Button size="sm" className="mt-3" variant="secondary" onClick={() => fileRef.current?.click()} disabled={uploading || user.id_verification_status === 'pending'}>
+                <FileUp size={14} /> {uploading ? t('common.loading') : t('profile.uploadId')}
+              </Button>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      <ErrorBox error={error} />
+
+      <div>
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-ink-soft">{t('profile.stats')}</h2>
+        <div className="grid grid-cols-2 gap-3">
+          <Stat value={pct(rep.completion_rate)} label={t('dash.stats.completion')} sub={`${rep.total_completed} ${t('dir.completed', { n: '' }).trim()}`} />
+          <Stat value={pct(rep.on_time_rate)} label={t('dash.stats.ontime')} />
+          <Stat value={pct(rep.dispute_rate)} label={t('dash.stats.dispute')} sub={`${rep.total_disputed} disputes`} />
+          <Stat value={money(rep.total_volume)} label={t('dash.stats.volume')} />
+        </div>
+      </div>
+
+      {flags.length > 0 && (
+        <Card className="border-warn/40">
+          <div className="mb-2 text-xs font-bold uppercase tracking-wider text-warn">{t('profile.flags')}</div>
+          {flags.map((f) => (
+            <div key={f.code} className="mb-1 flex items-center gap-1.5 rounded-lg bg-warn-soft px-3 py-1.5 text-xs font-medium text-warn">
+              <ShieldAlert size={13} /> {f.label}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <Card className="border-brand/30 bg-brand-soft/40">
+        <div className="flex items-center gap-2 text-sm font-bold text-brand"><FileText size={16} /> {t('profile.report')}</div>
+        <p className="mt-1 text-xs text-ink-soft">{t('profile.reportHint')}</p>
+        <div className="mt-3 flex gap-2">
+          <Button size="sm" block onClick={copyReport}>
+            {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? t('common.copied') : t('profile.copyReport')}
+          </Button>
+          <Link to={`/r/${reportToken}`} target="_blank" className="btn btn-secondary btn-sm">
+            {t('common.view')}
+          </Link>
+        </div>
+        <p className="mt-2 truncate text-[10px] text-ink-soft">{reportUrl}</p>
+      </Card>
+
+      {user.is_moderator && (
+        <Link to="/moderator" className="card flex items-center gap-3 px-4 py-3 transition-all hover:border-brand">
+          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-soft text-brand"><Scale size={16} /></div>
+          <div>
+            <div className="text-sm font-bold">{t('nav.moderator')}</div>
+            <div className="text-xs text-ink-soft">{t('dispute.queueTitle')}</div>
+          </div>
+          <Chip className="ml-auto bg-brand-soft text-brand">{t('nav.moderator')}</Chip>
+        </Link>
+      )}
+    </div>
+  );
+}
