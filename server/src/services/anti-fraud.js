@@ -9,9 +9,8 @@
 //                            many confirmed deals within 48h
 //   • device_cluster / ip_cluster — several new accounts from the same
 //                            device fingerprint or narrow IP range
-//   • hub_spoke_pattern    — a low-density component where one node
-//                            touches most of the edges (a single operator
-//                            dealing one-off with many throwaway spokes)
+//   • hub_spoke_pattern    — a low-density star network where most
+//                            spokes were created in a tight window
 //
 // These are simple connected-components + edge-density checks, exactly
 // as appropriate for an MVP — no graph-ML.
@@ -27,6 +26,8 @@ const CLUSTER_MIN_ACCOUNTS = 3;          // accounts sharing a signal…
 const CLUSTER_WINDOW_MS = 7 * 86400e3;   // …created within 7 days
 const HUB_SPOKE_MIN_MEMBERS = CLUSTER_MIN_ACCOUNTS + 1; // hub + ≥ CLUSTER_MIN_ACCOUNTS spokes
 const HUB_SPOKE_MIN_HUB_SHARE = 0.8;     // one node touches ≥ 80% of the component's edges
+const HUB_SPOKE_MIN_FRESH_SHARE = 0.7;   // …and ≥70% of the spokes…
+const HUB_SPOKE_FRESH_WINDOW_MS = CLUSTER_WINDOW_MS; // …were created within this window of each other
 
 // Union-find so we can extract connected components cheaply.
 class UnionFind {
@@ -93,17 +94,25 @@ export function detectCliques(deals) {
 }
 
 /**
- * Extract wide hub-and-spoke shapes: low-density connected components
- * (ones that FAIL the clique density bar) where a single node accounts
- * for most of the internal edges — the signature of one operator
- * dealing one-off with many throwaway spokes. Structured form powers
- * the moderator cluster view; detectHubSpokes turns it into a per-user
- * flag on the hub only.
+ * Extract freshly fabricated star networks: low-density connected
+ * components (ones that FAIL the clique density bar) where a single
+ * node accounts for most of the internal edges AND most spokes were
+ * created within a tight window of each other. Graph shape alone can't
+ * separate a fraud ring from a popular vendor with many one-time
+ * clients, so the spoke creation-time clustering is what makes this a
+ * fraud signal. Structured form powers the moderator cluster view;
+ * detectHubSpokes turns it into a per-user flag on the hub only.
  */
-export function hubSpokeGroups(deals) {
+export function hubSpokeGroups(deals, users) {
   const groups = [];
   const edges = new Set();
   for (const d of deals) edges.add(`${Math.min(d.party_a_id, d.party_b_id)}:${Math.max(d.party_a_id, d.party_b_id)}`);
+
+  const createdById = new Map();
+  for (const u of users || []) {
+    const t = Date.parse(u.created_at);
+    if (Number.isFinite(t)) createdById.set(u.id, t);
+  }
 
   for (const comp of componentsOf(deals)) {
     const members = [...comp];
@@ -129,22 +138,42 @@ export function hubSpokeGroups(deals) {
       const share = incident / internal;
       if (share > hubShare) { hubShare = share; hub = members[i]; }
     }
-    if (hubShare >= HUB_SPOKE_MIN_HUB_SHARE) groups.push({ hub, members, internal, possible, density, hubShare });
+    if (hubShare < HUB_SPOKE_MIN_HUB_SHARE) continue;
+
+    // Freshness gate: a majority of the spokes must have been created
+    // within a tight window of each other. A popular vendor's clients
+    // sign up organically, months apart; a fabricated ring is minted in
+    // a burst. Spokes without a usable created_at simply don't count
+    // toward the majority (conservative: they dilute it).
+    const spokeTimes = members
+      .filter((m) => m !== hub)
+      .map((m) => createdById.get(m))
+      .filter((t) => t !== undefined)
+      .sort((a, b) => a - b);
+    let best = 0, lo = 0;
+    for (let hi = 0; hi < spokeTimes.length; hi++) {
+      while (spokeTimes[hi] - spokeTimes[lo] > HUB_SPOKE_FRESH_WINDOW_MS) lo++;
+      best = Math.max(best, hi - lo + 1);
+    }
+    const freshShare = best / (members.length - 1);
+    if (freshShare < HUB_SPOKE_MIN_FRESH_SHARE) continue;
+
+    groups.push({ hub, members, internal, possible, density, hubShare, freshShare });
   }
   return groups;
 }
 
 /**
- * Flag the hub of a wide one-off trading network. Only the hub is
+ * Flag the hub of a freshly fabricated star network. Only the hub is
  * flagged — the spokes stay visible as members in the cluster view — so
  * a ring produces one flag rather than one per account.
  */
-export function detectHubSpokes(deals) {
+export function detectHubSpokes(deals, users) {
   const flags = new Map();
-  for (const g of hubSpokeGroups(deals)) {
+  for (const g of hubSpokeGroups(deals, users)) {
     flags.set(g.hub, {
       code: 'hub_spoke_pattern',
-      label: `Hub of a wide one-off trading network (${g.members.length} accounts, ${Math.round(g.hubShare * 100)}% of edges through one node) — possible coordinated spokes`,
+      label: `Hub of a low-density star network (${g.members.length} accounts, ${Math.round(g.freshShare * 100)}% of spokes created in a ${Math.round(HUB_SPOKE_FRESH_WINDOW_MS / 86400000)}-day window) — possible freshly fabricated network`,
     });
   }
   return flags;
@@ -236,8 +265,9 @@ export async function runFraudChecks() {
     `SELECT party_a_id, party_b_id, status, confirmed_at FROM transactions
      WHERE status IN ('confirmed', 'failed')`
   );
+  const users = await db.all(`SELECT id, created_at FROM users`);
   const all = new Map();
-  for (const m of [detectCliques(deals), detectHubSpokes(deals), await detectVelocity(), await detectClusters()]) {
+  for (const m of [detectCliques(deals), detectHubSpokes(deals, users), await detectVelocity(), await detectClusters()]) {
     for (const [uid, desc] of m) all.set(uid, desc);
   }
   for (const [uid, desc] of all) {
@@ -256,16 +286,19 @@ export async function runFraudChecks() {
 export async function fraudClustersForReview() {
   // No name filter here (unlike flaggedAccounts): fresh, unnamed
   // placeholder accounts are exactly the ones worth clustering.
-  const [deals, users] = await Promise.all([
+  const [deals, users, allUsers] = await Promise.all([
     db.all(`SELECT party_a_id, party_b_id FROM transactions WHERE status IN ('confirmed', 'failed')`),
     db.all(`SELECT id, name, device_fingerprint, signup_ip, created_at FROM users WHERE device_fingerprint <> '' OR signup_ip <> ''`),
+    // All users, not just fingerprint-bearing ones: the hub-spoke
+    // freshness gate needs every member's created_at.
+    db.all(`SELECT id, created_at FROM users`),
   ]);
   const windowStart = new Date(Date.now() - CLUSTER_WINDOW_MS).toISOString();
   const nameOf = (id) => users.find((u) => u.id === id)?.name || 'Unnamed user';
   const member = (id) => ({ id, name: nameOf(id) });
 
   const cliques = cliqueGroups(deals).map((g) => ({ ...g, members: g.members.map(member) }));
-  const hubSpokes = hubSpokeGroups(deals).map((g) => ({ ...g, hub: member(g.hub), members: g.members.map(member) }));
+  const hubSpokes = hubSpokeGroups(deals, allUsers).map((g) => ({ ...g, hub: member(g.hub), members: g.members.map(member) }));
 
   const withUsers = (groups) =>
     groups
