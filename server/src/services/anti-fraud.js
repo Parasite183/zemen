@@ -46,11 +46,12 @@ function componentsOf(deals) {
 }
 
 /**
- * Flag every member of a small, dense, mostly-closed trading group.
- * Returns a map userId -> flag descriptor.
+ * Extract dense, mostly-closed trading groups: connected components with
+ * enough internal edges. Structured form powers the moderator cluster
+ * view; detectCliques turns it into per-user flags.
  */
-export function detectCliques(deals) {
-  const flags = new Map();
+export function cliqueGroups(deals) {
+  const groups = [];
   const edges = new Set();
   for (const d of deals) edges.add(`${Math.min(d.party_a_id, d.party_b_id)}:${Math.max(d.party_a_id, d.party_b_id)}`);
 
@@ -65,13 +66,23 @@ export function detectCliques(deals) {
       }
     }
     const density = internal / possible;
-    if (density >= CLIQUE_MIN_DENSITY) {
-      const desc = {
-        code: 'closed_loop_clique',
-        label: `Part of a closed trading clique (${members.length} accounts, ${Math.round(density * 100)}% internal) — possible coordinated accounts`,
-      };
-      for (const uid of members) flags.set(uid, desc);
-    }
+    if (density >= CLIQUE_MIN_DENSITY) groups.push({ members, internal, possible, density });
+  }
+  return groups;
+}
+
+/**
+ * Flag every member of a small, dense, mostly-closed trading group.
+ * Returns a map userId -> flag descriptor.
+ */
+export function detectCliques(deals) {
+  const flags = new Map();
+  for (const g of cliqueGroups(deals)) {
+    const desc = {
+      code: 'closed_loop_clique',
+      label: `Part of a closed trading clique (${g.members.length} accounts, ${Math.round(g.density * 100)}% internal) — possible coordinated accounts`,
+    };
+    for (const uid of g.members) flags.set(uid, desc);
   }
   return flags;
 }
@@ -105,6 +116,26 @@ export async function detectVelocity() {
   return flags;
 }
 
+/**
+ * Pure grouping: accounts sharing a device fingerprint or /24 IP prefix,
+ * split into "fresh" (created within the cluster window) and older ones.
+ * Structured form powers the moderator cluster view; detectClusters turns
+ * it into per-user flags.
+ */
+export function clusterGroups(users, windowStart) {
+  const bucket = (keyFn) => {
+    const buckets = new Map();
+    for (const u of users) {
+      const key = keyFn(u);
+      if (!key) continue;
+      if (!buckets.has(key)) buckets.set(key, []);
+      buckets.get(key).push(u);
+    }
+    return [...buckets.entries()].map(([key, list]) => ({ key, fresh: list.filter((u) => u.created_at >= windowStart) }));
+  };
+  return { device: bucket((u) => u.device_fingerprint), ip: bucket((u) => u.signup_ip) };
+}
+
 /** Flag clusters of new accounts sharing a device fingerprint or /24 IP. */
 export async function detectClusters() {
   const flags = new Map();
@@ -113,29 +144,20 @@ export async function detectClusters() {
      WHERE device_fingerprint <> '' OR signup_ip <> ''`
   );
   const windowStart = new Date(Date.now() - CLUSTER_WINDOW_MS).toISOString();
+  const { device, ip } = clusterGroups(users, windowStart);
 
-  const group = (keyFn, code, kind) => {
-    const buckets = new Map();
-    for (const u of users) {
-      const key = keyFn(u);
-      if (!key) continue;
-      if (!buckets.has(key)) buckets.set(key, []);
-      buckets.get(key).push(u);
-    }
-    for (const [key, list] of buckets) {
-      const fresh = list.filter((u) => u.created_at >= windowStart);
-      if (fresh.length >= CLUSTER_MIN_ACCOUNTS) {
-        const desc = {
-          code,
-          label: `${fresh.length} new accounts share the same ${kind} (${key}) — possible duplicate accounts`,
-        };
-        for (const u of fresh) flags.set(u.id, desc);
-      }
+  const mark = (groups, code, kind) => {
+    for (const { key, fresh } of groups) {
+      if (fresh.length < CLUSTER_MIN_ACCOUNTS) continue;
+      const desc = {
+        code,
+        label: `${fresh.length} new accounts share the same ${kind} (${key}) — possible duplicate accounts`,
+      };
+      for (const u of fresh) flags.set(u.id, desc);
     }
   };
-
-  group((u) => u.device_fingerprint, 'device_cluster', 'device fingerprint');
-  group((u) => u.signup_ip, 'ip_cluster', 'IP range');
+  mark(device, 'device_cluster', 'device fingerprint');
+  mark(ip, 'ip_cluster', 'IP range');
   return flags;
 }
 
@@ -159,4 +181,38 @@ export async function runFraudChecks() {
     await mergeFraudFlags(uid, [desc]);
   }
   return { flaggedUsers: all.size };
+}
+
+/**
+ * Structured cluster data for the moderator review screen — the same
+ * signals detectCliques / detectClusters / detectVelocity produce, but
+ * with the actual member accounts attached so a reviewer can act on a
+ * whole group rather than reading flag labels.
+ */
+export async function fraudClustersForReview() {
+  // No name filter here (unlike flaggedAccounts): fresh, unnamed
+  // placeholder accounts are exactly the ones worth clustering.
+  const [deals, users] = await Promise.all([
+    db.all(`SELECT party_a_id, party_b_id FROM transactions WHERE status IN ('confirmed', 'failed')`),
+    db.all(`SELECT id, name, device_fingerprint, signup_ip, created_at FROM users WHERE device_fingerprint <> '' OR signup_ip <> ''`),
+  ]);
+  const windowStart = new Date(Date.now() - CLUSTER_WINDOW_MS).toISOString();
+  const nameOf = (id) => users.find((u) => u.id === id)?.name || 'Unnamed user';
+  const member = (id) => ({ id, name: nameOf(id) });
+
+  const cliques = cliqueGroups(deals).map((g) => ({ ...g, members: g.members.map(member) }));
+
+  const withUsers = (groups) =>
+    groups
+      .filter((g) => g.fresh.length >= CLUSTER_MIN_ACCOUNTS)
+      .map((g) => ({
+        key: g.key,
+        users: g.fresh.map((u) => ({ id: u.id, name: u.name || 'Unnamed user', created_at: u.created_at })),
+      }));
+  const { device, ip } = clusterGroups(users, windowStart);
+
+  const velocity = [];
+  for (const [uid, desc] of await detectVelocity()) velocity.push({ user: member(uid), label: desc.label });
+
+  return { cliques, device: withUsers(device), ip: withUsers(ip), velocity };
 }

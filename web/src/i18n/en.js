@@ -153,8 +153,20 @@ export default {
 
   'mod.title': 'Moderation',
   'mod.staffResolve': 'Resolve now (staff)',
-  'mod.flagTitle': 'Flagged patterns',
-  'mod.noFlags': 'No flagged patterns',
+  'mod.flagTitle': 'Flagged accounts',
+  'mod.noFlags': 'No flagged accounts',
+  'mod.idReviews': 'Identity reviews',
+  'mod.idEmpty': 'No identity documents awaiting review.',
+  'mod.approve': 'Approve',
+  'mod.reject': 'Reject',
+  'mod.docPending': 'Pending review',
+  'mod.docFlagged': 'Flagged',
+  'mod.noImage': 'No document image on file',
+  'mod.clusters': 'Fraud clusters',
+  'mod.clique': 'Trading clique — {n} accounts, {pct}% internal',
+  'mod.deviceCluster': 'Device cluster — {n} accounts share a fingerprint',
+  'mod.ipCluster': 'IP cluster — {n} accounts share an IP range',
+  'mod.refresh': 'Re-run fraud checks',
 
   'dir.title': 'Directory',
   'dir.searchPh': 'Search people or businesses…',
@@ -223,8 +235,6 @@ export default {
   'deal.otpTitle': 'Confirm it’s really you',
   'deal.otpHint': 'We’ll text a one-time code to your phone. This step protects money-moving actions.',
   'deal.otpSend': 'Send me a code',
-
-  'mod.refresh': 'Re-run fraud checks',
 
   'err.generic': 'Something went wrong. Try again.',
   'err.escrow_not_funded': 'Escrow must be funded before work starts.',

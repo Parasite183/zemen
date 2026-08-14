@@ -95,5 +95,8 @@ export async function readUploadedBytes(file) {
     if (!obj) return Buffer.alloc(0);
     return Buffer.from(await obj.arrayBuffer());
   }
-  return fs.readFileSync(file.path);
+  // withPath normalised file.path to a /uploads/... URL — map it back to
+  // the on-disk location under serverRoot before reading.
+  const rel = String(file.path || '').replace(/^\/+uploads\//, '');
+  return fs.readFileSync(path.join(serverRoot, 'uploads', rel));
 }

@@ -20,6 +20,7 @@ const {
   detectCliques,
   detectVelocity,
   detectClusters,
+  fraudClustersForReview,
 } = await import('../src/services/anti-fraud.js');
 
 let n = 0;
@@ -209,6 +210,30 @@ test('detectVelocity ignores slow, organic history', async () => {
   }
   const flags = await detectVelocity();
   assert.ok(!flags.has(a));
+});
+
+test('fraudClustersForReview returns structured cliques and device clusters with member names', async () => {
+  // 3 fresh accounts sharing one device fingerprint (distinct from any
+  // earlier test's data, so the assertion is unambiguous)
+  const f1 = await mkUser({ name: 'FingerA', fingerprint: 'dev-review-42' });
+  const f2 = await mkUser({ name: 'FingerB', fingerprint: 'dev-review-42' });
+  const f3 = await mkUser({ name: 'FingerC', fingerprint: 'dev-review-42' });
+  await mkDeal({ a: f1, b: f2, amount: 100 });
+  await mkDeal({ a: f2, b: f3, amount: 100 });
+  await mkDeal({ a: f1, b: f3, amount: 100 }); // triangle → dense clique
+
+  const { cliques, device } = await fraudClustersForReview();
+
+  const clique = cliques.find((g) => g.members.some((m) => m.id === f1));
+  assert.ok(clique, 'the triangle shows up as a clique');
+  assert.equal(clique.members.length, 3);
+  assert.ok(clique.members.every((m) => m.id && m.name), 'clique members carry id + name');
+  assert.ok(clique.density >= 0.5);
+
+  const cluster = device.find((c) => c.key === 'dev-review-42');
+  assert.ok(cluster, 'device fingerprint cluster is returned');
+  assert.equal(cluster.users.length, 3);
+  assert.ok(cluster.users.every((u) => u.name), 'cluster users carry names');
 });
 
 test('detectClusters flags 3+ fresh accounts sharing a device or IP', async () => {

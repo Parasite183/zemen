@@ -5,7 +5,7 @@ import { authMiddleware, requireStaff, requireModerator, verifyActionOtp } from 
 import { nowIso, sha256, normalizePhone } from '../crypto.js';
 import { uploadId, readUploadedBytes } from '../uploads.js';
 import { normalizeIdNumber, registerIdDocument } from '../services/identity.js';
-import { runFraudChecks } from '../services/anti-fraud.js';
+import { runFraudChecks, fraudClustersForReview } from '../services/anti-fraud.js';
 import { computeReputation, getReputation } from '../services/reputation.js';
 
 const router = Router();
@@ -58,7 +58,8 @@ router.post('/me/id-document', uploadId, wrap(async (req, res) => {
 
 // Staff-only: flip verification status after manual review. Sets
 // verified_at so the unverified-lifetime-volume cap stops counting
-// deals made before verification.
+// deals made before verification. The matching document row is updated
+// too so the moderator review queue reflects the decision.
 router.post('/me/verification', requireStaff, wrap(async (req, res) => {
   const { userId, status } = req.body;
   if (!userId || !['none', 'pending', 'verified', 'rejected'].includes(status)) {
@@ -66,6 +67,10 @@ router.post('/me/verification', requireStaff, wrap(async (req, res) => {
   }
   const verifiedAt = status === 'verified' ? nowIso() : null;
   await db.run('UPDATE users SET id_verification_status = ?, verified_at = ? WHERE id = ?', [status, verifiedAt, userId]);
+  await db.run(
+    `UPDATE id_documents SET status = ? WHERE user_id = ? AND status IN ('pending', 'rejected')`,
+    [status === 'verified' ? 'approved' : status, userId]
+  );
   ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [userId]) });
 }));
 
@@ -85,6 +90,49 @@ router.post('/me/phone', wrap(async (req, res) => {
 // Moderators: re-run the graph/velocity/cluster fraud checks on demand.
 router.post('/mod/fraud/refresh', requireModerator, wrap(async (req, res) => {
   ok(res, await runFraudChecks());
+}));
+
+// Moderators: the whole review screen in one call — identity documents
+// awaiting manual review (staff flips status via /me/verification),
+// structured fraud clusters with member accounts, and every account
+// carrying any flag. One row per user needing review, with their latest
+// document attached (some users are flagged pending before a document
+// exists, e.g. a placeholder profile).
+router.get('/mod/review', requireModerator, wrap(async (req, res) => {
+  const documents = await db.all(
+    `SELECT u.id AS user_id, u.name, u.phone, u.id_verification_status, u.id_flag_reason,
+            d.id AS doc_id, d.doc_type, d.status AS doc_status, d.reason AS doc_reason,
+            d.file_path AS doc_path, d.created_at AS doc_created_at
+     FROM users u
+     LEFT JOIN id_documents d ON d.id = (
+       SELECT id FROM id_documents WHERE user_id = u.id ORDER BY id DESC LIMIT 1
+     )
+     WHERE u.id_verification_status IN ('pending', 'rejected')
+     ORDER BY (u.id_verification_status = 'pending') DESC, u.id ASC
+     LIMIT 100`
+  );
+  const flaggedRows = await db.all(
+    `SELECT r.user_id, r.flags_json, u.name, u.category, u.id_verification_status
+     FROM reputation_scores r JOIN users u ON u.id = r.user_id
+     WHERE r.flags_json IS NOT NULL AND r.flags_json <> '' AND r.flags_json <> '[]'
+     ORDER BY u.id ASC`
+  );
+  const flaggedAccounts = [];
+  for (const r of flaggedRows) {
+    let flags = [];
+    try { flags = JSON.parse(r.flags_json); } catch { flags = []; }
+    if (flags.length) {
+      flaggedAccounts.push({
+        user: { id: r.user_id, name: r.name, category: r.category, id_verification_status: r.id_verification_status },
+        flags,
+      });
+    }
+  }
+  ok(res, {
+    documents: documents.map((d) => ({ ...d, phone: maskPhone(d.phone) })),
+    clusters: await fraudClustersForReview(),
+    flaggedAccounts,
+  });
 }));
 
 router.get('/me/report-token', wrap(async (req, res) => {

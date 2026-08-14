@@ -12,7 +12,10 @@ export default function Profile() {
   const { t } = useI18n();
   const { user, refresh } = useAuth();
   const fileRef = useRef();
-  const [rep, setRep] = useState(null);
+  // undefined = not loaded yet; null = loaded but no reputation row yet
+  // (fresh accounts). Only the former may show the spinner — otherwise a
+  // brand-new user's profile spins forever.
+  const [rep, setRep] = useState(undefined);
   const [reportToken, setReportToken] = useState('');
   const [uploading, setUploading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -30,7 +33,7 @@ export default function Profile() {
     }
   }, [user.id, user.is_moderator]);
 
-  if (!rep) return <Spinner />;
+  if (rep === undefined) return <Spinner />;
 
   const reportUrl = `${window.location.origin}/r/${reportToken}`;
 
@@ -144,10 +147,10 @@ export default function Profile() {
       <div>
         <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-ink-soft">{t('profile.stats')}</h2>
         <div className="grid grid-cols-2 gap-3">
-          <Stat value={pct(rep.completion_rate)} label={t('dash.stats.completion')} sub={`${rep.total_completed} ${t('dir.completed', { n: '' }).trim()}`} />
-          <Stat value={pct(rep.on_time_rate)} label={t('dash.stats.ontime')} />
-          <Stat value={pct(rep.dispute_rate)} label={t('dash.stats.dispute')} sub={`${rep.total_disputed} disputes`} />
-          <Stat value={money(rep.total_volume)} label={t('dash.stats.volume')} />
+          <Stat value={pct(rep?.completion_rate)} label={t('dash.stats.completion')} sub={`${rep?.total_completed ?? 0} ${t('dir.completed', { n: '' }).trim()}`} />
+          <Stat value={pct(rep?.on_time_rate)} label={t('dash.stats.ontime')} />
+          <Stat value={pct(rep?.dispute_rate)} label={t('dash.stats.dispute')} sub={`${rep?.total_disputed ?? 0} disputes`} />
+          <Stat value={money(rep?.total_volume)} label={t('dash.stats.volume')} />
         </div>
       </div>
 

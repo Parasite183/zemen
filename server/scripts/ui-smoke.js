@@ -104,7 +104,14 @@ async function login(page, demoLabel) {
   } else {
     await sleep(500);
     await clickText(page, 'Dev: autofill code');
-    await sleep(300);
+    // The autofill button fetches the code over the network and only
+    // then fills the input — wait for it to land instead of a fixed
+    // sleep, so a slow fetch can't leave Verify disabled (empty code)
+    // and the login times out.
+    await page.waitForFunction(
+      () => (document.querySelector('input[inputmode="numeric"]')?.value || '').replace(/\D/g, '').length >= 6,
+      { timeout: 8000 }
+    );
   }
   await clickText(page, 'Verify');
   await page.waitForFunction(() => !location.pathname.includes('/login'), { timeout: 10000 });
@@ -142,6 +149,7 @@ async function main() {
   const consoleErrors = [];
   page.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
   page.on('pageerror', (err) => consoleErrors.push(String(err)));
+  page.on('response', (r) => { if (r.status() >= 400) log(`HTTP ${r.status()} ${r.url()}`); });
 
   // ── 1. Sara logs in ───────────────────────────────────────────────
   log('\n── Sara Tesfaye: login + dashboard ──');
