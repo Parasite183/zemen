@@ -203,6 +203,28 @@ export default {
   'settings.lang.am': 'አማርኛ (Amharic)',
   'settings.danger': 'Sign out',
   'settings.dev': 'Developer info',
+  'settings.providerLine': 'swappable provider (console by default)',
+  'settings.sessions': 'Devices & sessions',
+  'settings.sessionsHint': 'Revoking sessions signs this account out everywhere at once.',
+  'settings.signOutAll': 'Sign out of all devices',
+  'settings.phone': 'Change phone number',
+  'settings.phoneSendCode': 'Send code to my current phone',
+  'settings.phoneHint': 'We text a code to your current number first — this re-confirms it’s really you.',
+  'settings.phoneCodeSent': 'Enter the code we texted you to confirm this change.',
+  'settings.phoneConfirm': 'Confirm new number',
+  'settings.phoneDone': 'Phone number updated.',
+
+  'profile.docType': 'Document type',
+  'profile.docType.national_id': 'National ID',
+  'profile.docType.business_license': 'Business license',
+  'profile.idNumber': 'ID / license number',
+
+  'deal.unverifiedHint': 'Unverified accounts can deal up to {free} per deal and {cap} total lifetime volume. Verify your identity to deal larger amounts.',
+  'deal.otpTitle': 'Confirm it’s really you',
+  'deal.otpHint': 'We’ll text a one-time code to your phone. This step protects money-moving actions.',
+  'deal.otpSend': 'Send me a code',
+
+  'mod.refresh': 'Re-run fraud checks',
 
   'err.generic': 'Something went wrong. Try again.',
   'err.escrow_not_funded': 'Escrow must be funded before work starts.',

@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 const CHROME = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const WEB = process.env.WEB_URL || 'http://localhost:5173';
+const API_BASE = process.env.API_BASE || 'http://localhost:3001';
 // When set, OTP codes are extracted from this file (wrangler tail output)
 // instead of the dev-only autofill button — required for production runs.
 const OTP_LOG = process.env.OTP_LOG || null;
@@ -110,6 +111,29 @@ async function login(page, demoLabel) {
   log(`  after verify: ${page.url()}`);
 }
 
+// Money-moving actions (fund escrow, confirm a large deal) trigger an
+// inline re-auth card: click "Send me a code", grab the OTP (dev-only
+// peek endpoint locally, wrangler tail log on production), type it, and
+// Verify — the action then retries with the code attached.
+async function handleActionOtp(page, phone) {
+  log(`action-otp(${phone}) → modal`);
+  await clickText(page, 'Send me a code');
+  const fromOffset = OTP_LOG && fs.existsSync(OTP_LOG) ? fs.statSync(OTP_LOG).size : 0;
+  await page.waitForSelector('input[inputmode="numeric"]', { timeout: 9000 });
+  let code;
+  if (OTP_LOG) {
+    code = await readOtp(phone, fromOffset);
+  } else {
+    const peek = await fetch(`${API_BASE}/api/auth/dev/otp?phone=${encodeURIComponent(phone)}`).then((r) => r.json());
+    code = peek.code;
+    if (!code) throw new Error(`No dev action OTP for ${phone}`);
+  }
+  log(`  otp: ${code}`);
+  await page.type('input[inputmode="numeric"]', code);
+  await clickText(page, 'Verify');
+  await sleep(600); // let the retried action settle before the next wait
+}
+
 async function main() {
   const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--window-size=430,860'] });
   const page = await browser.newPage();
@@ -170,6 +194,7 @@ async function main() {
   await clickText(page, dealTitle);
   await waitText(page, 'Fund escrow');
   await clickText(page, 'Fund escrow');
+  await handleActionOtp(page, '+251911000002');
   await waitText(page, 'Funds held');
   ok('Escrow funded (funds held)', true);
   await snap(page, '06-escrow-funded');
@@ -197,6 +222,7 @@ async function main() {
   await clickText(page, dealTitle);
   await waitText(page, 'Confirm completion');
   await clickText(page, 'Confirm completion');
+  await handleActionOtp(page, '+251911000002');
   // 'Completed' is also a timeline step label, so wait for 'Released'
   // instead — it only appears after the confirm + escrow release render.
   await waitText(page, 'Released', 15000);

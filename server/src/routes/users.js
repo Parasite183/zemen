@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { wrap, ok, badRequest, forbidden, notFound } from '../http.js';
-import { authMiddleware, requireStaff } from '../auth.js';
-import { nowIso } from '../crypto.js';
-import { uploadId } from '../uploads.js';
+import { authMiddleware, requireStaff, requireModerator, verifyActionOtp } from '../auth.js';
+import { nowIso, sha256, normalizePhone } from '../crypto.js';
+import { uploadId, readUploadedBytes } from '../uploads.js';
+import { normalizeIdNumber, registerIdDocument } from '../services/identity.js';
+import { runFraudChecks } from '../services/anti-fraud.js';
 import { computeReputation, getReputation } from '../services/reputation.js';
 
 const router = Router();
@@ -26,23 +28,63 @@ router.patch('/me', wrap(async (req, res) => {
   ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]) });
 }));
 
-// ── ID document upload (manual review — not automated KYC at MVP) ───
+// ── ID document upload (manual review, with duplicate detection) ─────
+// Deduplication compares three signals against every other account:
+//   1. the ID number the user enters (hashed — OCR is fine at MVP,
+//      flagged for manual review either way)
+//   2. a perceptual hash of the document image, computed client-side on
+//      a canvas and sent with the upload
+//   3. the exact SHA-256 of the uploaded file bytes (server-side, always)
+// Matches are auto-flagged as 'rejected' with a reason for staff review
+// — never silently accepted.
 router.post('/me/id-document', uploadId, wrap(async (req, res) => {
   if (!req.file) throw badRequest('Attach an ID document (photo/scan)', 'file_required');
-  const status = req.user.id_verification_status === 'rejected' ? 'pending' : 'pending';
-  await db.run('UPDATE users SET id_doc_path = ?, id_verification_status = ? WHERE id = ?',
-    [req.file.path.replaceAll('\\', '/'), status, req.user.id]);
-  ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]) });
+  const docType = ['national_id', 'business_license'].includes(req.body?.docType) ? req.body.docType : 'national_id';
+  const idNumber = String(req.body?.idNumber || '');
+  const phash = String(req.body?.phash || '');
+  const fileSha256 = sha256(await readUploadedBytes(req.file));
+  const idNumHash = normalizeIdNumber(idNumber) ? sha256(normalizeIdNumber(idNumber)) : '';
+  const filePath = req.file.path.replaceAll('\\', '/');
+
+  const { duplicate } = await registerIdDocument({ userId: req.user.id, docType, idNumber, phash, fileSha256, filePath });
+  const status = duplicate.code ? 'rejected' : 'pending';
+  await db.run(
+    `UPDATE users SET id_doc_path = ?, id_verification_status = ?, id_number_hash = ?, id_phash = ?, id_flag_reason = ? WHERE id = ?`,
+    [filePath, status, idNumHash, phash, duplicate.label, req.user.id]
+  );
+  const user = await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]);
+  ok(res, { user, duplicate });
 }));
 
-// Staff-only: flip verification status after manual review.
+// Staff-only: flip verification status after manual review. Sets
+// verified_at so the unverified-lifetime-volume cap stops counting
+// deals made before verification.
 router.post('/me/verification', requireStaff, wrap(async (req, res) => {
   const { userId, status } = req.body;
   if (!userId || !['none', 'pending', 'verified', 'rejected'].includes(status)) {
     throw badRequest('userId and a valid status are required');
   }
-  await db.run('UPDATE users SET id_verification_status = ? WHERE id = ?', [status, userId]);
+  const verifiedAt = status === 'verified' ? nowIso() : null;
+  await db.run('UPDATE users SET id_verification_status = ?, verified_at = ? WHERE id = ?', [status, verifiedAt, userId]);
   ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [userId]) });
+}));
+
+// Change the phone number tied to the account. Requires an action OTP
+// sent to the CURRENT phone (re-auth before a sensitive change).
+router.post('/me/phone', wrap(async (req, res) => {
+  const phone = normalizePhone(req.body?.phone);
+  if (!phone) throw badRequest('Enter a valid phone number', 'phone_invalid');
+  const okOtp = await verifyActionOtp(req.user, req.body?.otp);
+  if (!okOtp) throw badRequest('Enter the code we sent to your current phone', 'otp_required');
+  const clash = await db.get('SELECT id FROM users WHERE phone = ? AND id <> ?', [phone, req.user.id]);
+  if (clash) throw badRequest('That phone number is already registered', 'phone_taken');
+  await db.run('UPDATE users SET phone = ? WHERE id = ?', [phone, req.user.id]);
+  ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]) });
+}));
+
+// Moderators: re-run the graph/velocity/cluster fraud checks on demand.
+router.post('/mod/fraud/refresh', requireModerator, wrap(async (req, res) => {
+  ok(res, await runFraudChecks());
 }));
 
 router.get('/me/report-token', wrap(async (req, res) => {

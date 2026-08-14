@@ -4,8 +4,9 @@ import { ShieldCheck, FileUp, FileText, Copy, Check, ShieldAlert, Scale } from '
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
-import { Card, Stat, Avatar, VerifiedBadge, Button, Spinner, ErrorBox, Chip } from '../components/ui.jsx';
-import { money, pct, shortDate } from '../lib.js';
+import { Card, Stat, Avatar, VerifiedBadge, Button, Spinner, ErrorBox, Chip, Field } from '../components/ui.jsx';
+import { money, pct, shortDate, cx } from '../lib.js';
+import { imagePhash } from '../phash.js';
 
 export default function Profile() {
   const { t } = useI18n();
@@ -17,6 +18,9 @@ export default function Profile() {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
   const [flags, setFlags] = useState([]);
+  const [docType, setDocType] = useState('national_id');
+  const [idNumber, setIdNumber] = useState('');
+  const [dupNotice, setDupNotice] = useState('');
 
   useEffect(() => {
     api('/api/auth/me').then(({ user, reputation }) => setRep(reputation));
@@ -33,9 +37,21 @@ export default function Profile() {
   const uploadId = async (file) => {
     setUploading(true);
     setError('');
+    setDupNotice('');
     try {
       const fd = new FormData();
       fd.append('document', file);
+      fd.append('docType', docType);
+      fd.append('idNumber', idNumber.trim());
+      // Perceptual hash of the document image, computed in the browser.
+      // The server also hashes the exact file bytes; both feed duplicate
+      // detection (a re-photographed document is caught by phash, an
+      // identical re-upload by the byte hash).
+      try {
+        fd.append('phash', await imagePhash(file));
+      } catch {
+        /* non-image documents (PDF) have no pixel hash — byte hash still applies */
+      }
       const res = await fetch('/api/me/id-document', {
         method: 'POST',
         headers: { authorization: `Bearer ${localStorage.getItem('zemen.token')}` },
@@ -43,6 +59,7 @@ export default function Profile() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Upload failed');
+      if (json.duplicate?.code) setDupNotice(json.duplicate.label);
       await refresh();
       const me = await api('/api/auth/me');
       setRep(me.reputation);
@@ -83,11 +100,40 @@ export default function Profile() {
               <div className="mt-1 text-xs text-ink-soft">
                 {user.id_verification_status === 'pending' ? t('profile.uploadDone') : ''}
               </div>
-              <input ref={fileRef} type="file" accept="image/*,.pdf,.heic" className="hidden"
-                onChange={(e) => e.target.files[0] && uploadId(e.target.files[0])} />
-              <Button size="sm" className="mt-3" variant="secondary" onClick={() => fileRef.current?.click()} disabled={uploading || user.id_verification_status === 'pending'}>
-                <FileUp size={14} /> {uploading ? t('common.loading') : t('profile.uploadId')}
-              </Button>
+              {user.id_verification_status !== 'pending' && (
+                <div className="mt-3 space-y-2">
+                  <div>
+                    <label className="field-label">{t('profile.docType')}</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {['national_id', 'business_license'].map((d) => (
+                        <button
+                          key={d}
+                          type="button"
+                          onClick={() => setDocType(d)}
+                          className={cx(
+                            'rounded-xl border px-3 py-2 text-xs font-semibold transition-colors',
+                            docType === d ? 'border-brand bg-brand-soft text-brand' : 'border-line text-ink-soft hover:border-brand/50'
+                          )}
+                        >
+                          {t(`profile.docType.${d}`)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <Field label={t('profile.idNumber')}>
+                    <input className="input" value={idNumber} onChange={(e) => setIdNumber(e.target.value)}
+                      placeholder="e.g. 1234567890" autoComplete="off" />
+                  </Field>
+                  <input ref={fileRef} type="file" accept="image/*,.pdf,.heic" className="hidden"
+                    onChange={(e) => e.target.files[0] && uploadId(e.target.files[0])} />
+                  <Button size="sm" block variant="secondary" onClick={() => fileRef.current?.click()} disabled={uploading}>
+                    <FileUp size={14} /> {uploading ? t('common.loading') : t('profile.uploadId')}
+                  </Button>
+                  {dupNotice && (
+                    <div className="rounded-lg bg-warn-soft px-3 py-2 text-xs font-medium text-warn">{dupNotice}</div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </Card>

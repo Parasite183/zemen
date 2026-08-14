@@ -15,6 +15,23 @@ export const config = {
   // True when running as a Cloudflare Worker (see server/worker.js).
   // Static file serving and local disk uploads are disabled in that mode.
   worker: env.ZEMEN_WORKER === '1',
+
+  // ── identity / anti-sybil limits (ETB) ────────────────────────────
+  // Deals above this amount require a verified identity on both sides.
+  freeDealThresholdEtb: Number(env.FREE_DEAL_THRESHOLD_ETB || 500),
+  // Total lifetime deal volume an unverified account may accrue before
+  // verification is mandatory.
+  unverifiedLifetimeVolumeEtb: Number(env.UNVERIFIED_LIFETIME_VOLUME_ETB || 5000),
+
+  // ── SMS provider (console | twilio | africastalking) ──────────────
+  smsProvider: env.SMS_PROVIDER || 'console',
+  // Reject phone numbers the provider flags as VoIP/virtual. Raises the
+  // cost of sybil accounts but is not perfect — VOIP detection misses
+  // some numbers, so this is a deterrent, not a guarantee.
+  smsVoipBlock: env.SMS_VOIP_BLOCK !== 'false',
+
+  // JWT session lifetime.
+  jwtTtl: env.JWT_TTL || '7d',
 };
 
 /** Absolute path to the `server` package root. */

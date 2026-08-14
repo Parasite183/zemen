@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ShieldCheck, UserRound } from 'lucide-react';
+import { ShieldCheck, UserRound, ShieldAlert } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
@@ -24,6 +24,11 @@ export default function NewDeal() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [created, setCreated] = useState(null);
+  const [limits, setLimits] = useState(null);
+
+  useEffect(() => {
+    api('/api/auth/me').then(({ limits }) => setLimits(limits)).catch(() => {});
+  }, []);
 
   const submit = async () => {
     setBusy(true);
@@ -73,6 +78,18 @@ export default function NewDeal() {
   return (
     <div className="mx-auto max-w-md space-y-4">
       <h1 className="text-xl font-bold tracking-tight">{t('deal.new')}</h1>
+
+      {user.id_verification_status !== 'verified' && limits && (
+        <div className="flex items-start gap-3 rounded-xl border border-warn/40 bg-warn-soft px-4 py-3 text-xs text-warn">
+          <ShieldAlert size={16} className="mt-0.5 shrink-0" />
+          <span>
+            {t('deal.unverifiedHint', {
+              free: money(limits.freeDealThresholdEtb, 'ETB'),
+              cap: money(limits.unverifiedLifetimeVolumeEtb, 'ETB'),
+            })}
+          </span>
+        </div>
+      )}
 
       {counterpartyName && (
         <div className="flex items-center gap-3 rounded-xl bg-brand-soft px-4 py-3 text-sm font-medium text-brand">

@@ -36,7 +36,7 @@ router.post('/:id/cancel', wrap(async (req, res) => {
 }));
 
 router.post('/:id/escrow/deposit', wrap(async (req, res) => {
-  ok(res, { deal: await fundEscrow(Number(req.params.id), req.user) });
+  ok(res, { deal: await fundEscrow(Number(req.params.id), req.user, req.body?.otp) });
 }));
 
 router.post('/:id/start', wrap(async (req, res) => {
@@ -48,7 +48,7 @@ router.post('/:id/deliver', wrap(async (req, res) => {
 }));
 
 router.post('/:id/confirm', wrap(async (req, res) => {
-  ok(res, { deal: await confirmDeal(Number(req.params.id), req.user) });
+  ok(res, { deal: await confirmDeal(Number(req.params.id), req.user, req.body?.otp) });
 }));
 
 // Tamper-evidence view for a single deal: its chained ledger entries.

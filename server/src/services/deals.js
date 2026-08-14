@@ -6,7 +6,11 @@ import { appendLedger } from '../ledger.js';
 import { canonicalize, sha256, genRef, nowIso } from '../crypto.js';
 import paymentsProvider from '../providers/payments.js';
 import { badRequest, notFound, forbidden, conflict } from '../http.js';
+import { config } from '../config.js';
+import { verifyActionOtp } from '../auth.js';
+import { assertDealEligibility } from './identity.js';
 import { computeReputation } from './reputation.js';
+import { runFraudChecks } from './anti-fraud.js';
 
 export const DEAL_STATUSES = ['pending', 'agreed', 'in_progress', 'delivered', 'confirmed', 'disputed', 'failed', 'declined', 'cancelled'];
 
@@ -60,6 +64,11 @@ export async function createDeal(creator, input) {
   if (!Number.isFinite(amount) || amount <= 0) throw badRequest('Enter a valid amount', 'amount_invalid');
   if (!otherPhone && !otherId) throw badRequest('Enter the other party phone number', 'phone_required');
 
+  // Identity gate: large deals require a verified account on the creating
+  // side; the accepting side is checked in respondToDeal. Unverified
+  // accounts are also capped on total lifetime volume.
+  await assertDealEligibility(creator, amount);
+
   const other = otherPhone
     ? await db.get('SELECT * FROM users WHERE phone = ?', [otherPhone])
     : await db.get('SELECT * FROM users WHERE id = ?', [otherId]);
@@ -95,6 +104,10 @@ export async function respondToDeal(id, user, accept) {
     await appendLedger('deal_declined', { txId: id, userId: user.id });
     return dealDetail(id);
   }
+
+  // Identity gate on the accepting side too — an unverified account
+  // cannot accept a deal above the free threshold or beyond its cap.
+  await assertDealEligibility(user, d.amount);
 
   const terms = {
     ref: d.ref,
@@ -136,12 +149,17 @@ export async function cancelDeal(id, user) {
 }
 
 // ── escrow (stub mobile-money provider) ─────────────────────────────
-export async function fundEscrow(id, user) {
+export async function fundEscrow(id, user, otp) {
   const d = await loadDealForUser(id, user);
   if (!d.escrow_enabled) throw badRequest('This deal has no escrow');
   if (d.party_a_id !== user.id) throw forbidden('Only the payer can fund escrow');
   if (d.escrow_state === 'funded') throw conflict('Escrow already funded');
   if (!['agreed', 'in_progress', 'delivered', 'disputed'].includes(d.status)) throw conflict('Deal is not in a fundable state');
+
+  // High-stakes action: money is moving — re-auth with a fresh OTP.
+  if (!(await verifyActionOtp(user, otp))) {
+    throw badRequest('Enter the one-time code we sent you to fund escrow', 'otp_required');
+  }
 
   const result = await paymentsProvider.deposit({ amount: d.amount, currency: d.currency, ref: d.ref });
   const { rowCount } = await db.run(
@@ -184,10 +202,16 @@ export async function deliverDeal(id, user) {
   return dealDetail(id);
 }
 
-export async function confirmDeal(id, user) {
+export async function confirmDeal(id, user, otp) {
   const d = await loadDealForUser(id, user);
   if (d.status !== 'delivered') throw conflict('Deal must be delivered before confirming');
   if (d.delivered_by === user.id) throw forbidden('You cannot confirm your own delivery');
+
+  // High-stakes action for large deals: re-auth before releasing escrow
+  // or marking the deal complete.
+  if (d.amount > config.freeDealThresholdEtb && !(await verifyActionOtp(user, otp))) {
+    throw badRequest('Enter the one-time code we sent you to confirm this deal', 'otp_required');
+  }
 
   await db.tx(async () => {
     // Guarded transition: only a delivered deal can be confirmed once.
@@ -213,6 +237,8 @@ export async function confirmDeal(id, user) {
   });
 
   await Promise.all([computeReputation(d.party_a_id), computeReputation(d.party_b_id)]);
+  // Refresh graph-level fraud signals (clique / velocity / clusters).
+  await runFraudChecks().catch(() => {});
   return dealDetail(id);
 }
 

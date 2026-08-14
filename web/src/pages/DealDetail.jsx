@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ShieldCheck, Lock, LockOpen, Scale, Hash, CheckCircle2, ChevronDown, ChevronUp, Banknote } from 'lucide-react';
+import { ShieldCheck, Lock, LockOpen, Scale, Hash, CheckCircle2, ChevronDown, ChevronUp, Banknote, KeyRound } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
@@ -19,6 +19,13 @@ export default function DealDetail() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [showHash, setShowHash] = useState(false);
+  // High-stakes actions (fund escrow, confirm large deals) require a
+  // fresh one-time code sent to the user's phone. The server answers
+  // with code 'otp_required' when one is needed; we prompt inline.
+  const [otpFor, setOtpFor] = useState(null);
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
+  const [otpBusy, setOtpBusy] = useState(false);
 
   const load = useCallback(async () => {
     const { deal } = await api(`/api/deals/${id}`);
@@ -29,18 +36,41 @@ export default function DealDetail() {
 
   useEffect(() => { load(); }, [load]);
 
-  const act = async (action) => {
+  const act = async (action, otpValue) => {
     setBusy(action);
     setError('');
     try {
-      const { deal } = await api(`/api/deals/${id}/${action}`, { method: 'POST' });
+      const body = otpValue ? { otp: otpValue } : undefined;
+      const { deal } = await api(`/api/deals/${id}/${action}`, { method: 'POST', body });
       setDeal(deal);
       if (action === 'respond') await api(`/api/deals/${id}/ledger`).then(({ entries, chain }) => setLedger({ entries, chain })).catch(() => {});
       if (action === 'confirm') load();
+      setOtpFor(null);
     } catch (e) {
+      if (e.code === 'otp_required') {
+        // Re-auth required: surface the inline code prompt, then retry.
+        setOtpFor(action);
+        setOtp('');
+        setOtpSent(false);
+        return;
+      }
       setError(e.message);
     } finally {
       setBusy('');
+    }
+  };
+
+  const sendActionOtp = async () => {
+    setOtpBusy(true);
+    setError('');
+    try {
+      await api('/api/auth/action-otp', { method: 'POST' });
+      setOtpSent(true);
+      setOtp('');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setOtpBusy(false);
     }
   };
 
@@ -189,6 +219,30 @@ export default function DealDetail() {
             <Button className="mt-3" block onClick={() => act('escrow/deposit')} disabled={busy === 'escrow/deposit'}>
               <Lock size={15} /> {t('deal.deposit', { amount: money(deal.amount, deal.currency) })}
             </Button>
+          )}
+        </Card>
+      )}
+
+      {/* re-auth prompt for high-stakes actions */}
+      {otpFor && (
+        <Card className="border-warn/50">
+          <div className="flex items-center gap-2 text-sm font-bold text-warn"><KeyRound size={15} /> {t('deal.otpTitle')}</div>
+          <p className="mt-1 text-xs text-ink-soft">{t('deal.otpHint')}</p>
+          {!otpSent ? (
+            <Button size="sm" className="mt-3" variant="secondary" block onClick={sendActionOtp} disabled={otpBusy}>
+              {otpBusy ? t('common.loading') : t('deal.otpSend')}
+            </Button>
+          ) : (
+            <div className="mt-3 space-y-2">
+              <input className="input text-center text-lg font-bold tracking-[0.4em]" inputMode="numeric" maxLength={6}
+                value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))} autoFocus />
+              <div className="flex gap-2">
+                <Button size="sm" block onClick={() => act(otpFor, otp)} disabled={otp.length < 6}>
+                  {t('common.verify')}
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => setOtpFor(null)}>{t('common.cancel')}</Button>
+              </div>
+            </div>
           )}
         </Card>
       )}

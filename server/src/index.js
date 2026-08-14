@@ -4,7 +4,7 @@ import { buildApp } from './app.js';
 import { config } from './config.js';
 
 async function main() {
-  initDb();
+  await initDb();
   await initSchema();
 
   const app = buildApp();

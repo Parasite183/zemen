@@ -1,14 +1,20 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { wrap, ok, badRequest, unauthorized } from '../http.js';
-import { signToken, authMiddleware } from '../auth.js';
+import { authMiddleware, issueSession, revokeSession, revokeAllSessions, requestActionOtp } from '../auth.js';
 import { genOtp, normalizePhone, genRef, nowIso } from '../crypto.js';
+import { ipPrefix } from '../services/identity.js';
 import smsProvider from '../providers/sms.js';
 import { config } from '../config.js';
 
 const router = Router();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_MAX_ATTEMPTS = 5;
+
+/** Coarse client-IP for fraud detection (CF header on Workers, req.ip otherwise). */
+function clientIp(req) {
+  return ipPrefix(req.headers['cf-connecting-ip'] || req.ip || '');
+}
 
 export function publicUser(u) {
   return {
@@ -18,17 +24,24 @@ export function publicUser(u) {
   };
 }
 
-// Step 1: request an OTP. The code is generated here, "sent" through the
-// swappable SMS stub, and printed to the server console for the demo.
+// Step 1: request an OTP. The code is generated here and delivered
+// through the swappable SMS provider. When the provider can validate the
+// line, VoIP/virtual numbers are rejected up front (anti-sybil: they are
+// the cheapest way to fabricate many accounts).
 router.post('/request-otp', wrap(async (req, res) => {
   const phone = normalizePhone(req.body?.phone);
   if (!phone) throw badRequest('Enter a valid phone number', 'phone_invalid');
 
-  await db.run('DELETE FROM otp_codes WHERE phone = ? AND used = 0', [phone]);
+  const check = await smsProvider.validateNumber(phone);
+  if (config.smsVoipBlock && check?.isVoip) {
+    throw badRequest('This number looks like a VoIP/virtual line — use a real phone number', 'voip_number');
+  }
+
+  await db.run('DELETE FROM otp_codes WHERE phone = ? AND purpose = ? AND used = 0', [phone, 'login']);
   const code = genOtp();
   await db.run(
-    'INSERT INTO otp_codes (phone, code, expires_at, created_at) VALUES (?, ?, ?, ?)',
-    [phone, code, new Date(Date.now() + OTP_TTL_MS).toISOString(), nowIso()]
+    'INSERT INTO otp_codes (phone, code, purpose, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
+    [phone, code, 'login', new Date(Date.now() + OTP_TTL_MS).toISOString(), nowIso()]
   );
   await smsProvider.sendOtp(phone, code);
   ok(res, { sent: true, expiresIn: OTP_TTL_MS / 1000 });
@@ -41,7 +54,7 @@ router.post('/verify-otp', wrap(async (req, res) => {
   if (!phone || !code) throw badRequest('Phone and code required', 'missing_fields');
 
   const latest = await db.get(
-    'SELECT * FROM otp_codes WHERE phone = ? AND used = 0 ORDER BY id DESC LIMIT 1',
+    "SELECT * FROM otp_codes WHERE phone = ? AND purpose = 'login' AND used = 0 ORDER BY id DESC LIMIT 1",
     [phone]
   );
   if (!latest) throw unauthorized('Invalid or expired code');
@@ -62,20 +75,59 @@ router.post('/verify-otp', wrap(async (req, res) => {
 
   let user = await db.get('SELECT * FROM users WHERE phone = ?', [phone]);
   let isNew = false;
+  const device = String(req.body?.device || '').slice(0, 200);
+  const ip = clientIp(req);
   if (!user) {
     isNew = true;
     const { lastId } = await db.run(
-      'INSERT INTO users (phone, report_token, created_at) VALUES (?, ?, ?)',
-      [phone, genRef('RP'), nowIso()]
+      'INSERT INTO users (phone, report_token, device_fingerprint, signup_ip, last_ip, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [phone, genRef('RP'), device, ip, ip, nowIso()]
     );
     user = await db.get('SELECT * FROM users WHERE id = ?', [lastId]);
+  } else {
+    // Keep the first-seen fingerprint; refresh the last-seen IP.
+    await db.run(
+      `UPDATE users SET last_ip = ?,
+              device_fingerprint = CASE WHEN device_fingerprint = '' THEN ? ELSE device_fingerprint END
+       WHERE id = ?`,
+      [ip, device, user.id]
+    );
+    user = await db.get('SELECT * FROM users WHERE id = ?', [user.id]);
   }
-  ok(res, { token: signToken(user), user: publicUser(user), isNew });
+  const { token } = await issueSession(user, device, ip);
+  ok(res, { token, user: publicUser(user), isNew });
+}));
+
+// Server-side session endpoints (the JWT is stateless but its jti must
+// match a live sessions row — these revoke tokens server-side).
+router.post('/signout', authMiddleware, wrap(async (req, res) => {
+  await revokeSession(req.token.jti);
+  ok(res, { signedOut: true });
+}));
+
+router.post('/sessions/revoke-all', authMiddleware, wrap(async (req, res) => {
+  await revokeAllSessions(req.user.id);
+  ok(res, { revoked: true });
+}));
+
+// Send a one-time code to the CURRENT phone for a high-stakes action
+// (funding escrow, confirming a large deal, changing the phone number).
+router.post('/action-otp', authMiddleware, wrap(async (req, res) => {
+  await requestActionOtp(req.user);
+  ok(res, { sent: true, expiresIn: 600 });
 }));
 
 router.get('/me', authMiddleware, wrap(async (req, res) => {
   const reputation = await db.get('SELECT * FROM reputation_scores WHERE user_id = ?', [req.user.id]);
-  ok(res, { user: publicUser(req.user), reputation });
+  ok(res, {
+    user: publicUser(req.user),
+    reputation,
+    // Identity limits the UI surfaces (e.g. New deal / Profile hints).
+    limits: {
+      freeDealThresholdEtb: config.freeDealThresholdEtb,
+      unverifiedLifetimeVolumeEtb: config.unverifiedLifetimeVolumeEtb,
+    },
+  });
 }));
 
 // Dev-only: peek at the latest unused OTP for a phone so demos stay

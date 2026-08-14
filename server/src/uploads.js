@@ -82,3 +82,18 @@ function makeUploads() {
 }
 
 export const { uploadId, uploadEvidence } = makeUploads();
+
+/**
+ * Read an uploaded file's bytes back from whatever store it landed in
+ * (R2 on Workers, disk otherwise) — used for exact-duplicate hashing of
+ * ID documents.
+ */
+export async function readUploadedBytes(file) {
+  if (file.key) {
+    const bucket = (globalThis.__ZEMEN_BINDINGS || {}).UPLOADS;
+    const obj = await bucket.get(file.key);
+    if (!obj) return Buffer.alloc(0);
+    return Buffer.from(await obj.arrayBuffer());
+  }
+  return fs.readFileSync(file.path);
+}

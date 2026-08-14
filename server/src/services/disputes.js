@@ -10,6 +10,7 @@ import { markDisputed } from './deals.js';
 import paymentsProvider from '../providers/payments.js';
 import smsProvider from '../providers/sms.js';
 import { computeReputation } from './reputation.js';
+import { runFraudChecks } from './anti-fraud.js';
 import { badRequest, notFound, forbidden, conflict } from '../http.js';
 
 export async function createDispute({ transactionId, raisedBy, reason }) {
@@ -174,6 +175,7 @@ async function applyResolution(disputeId, verdict, by) {
   });
 
   await Promise.all([computeReputation(deal.party_a_id), computeReputation(deal.party_b_id)]);
+  await runFraudChecks().catch(() => {});
 
   // Notify both parties of the outcome (stub SMS in dev).
   const outcomeLine = resolution === 'confirmed'

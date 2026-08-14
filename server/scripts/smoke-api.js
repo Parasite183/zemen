@@ -36,6 +36,18 @@ async function login(phone) {
   return { token: v.json.token, user: v.json.user };
 }
 
+// High-stakes actions (funding escrow, confirming a large deal) re-auth
+// with a fresh OTP sent to the account phone. Request it, then peek it
+// via the dev endpoint the same way login() does.
+async function actionOtp(token, phone) {
+  const req = await api('/api/auth/action-otp', { method: 'POST', token });
+  if (req.status !== 200) throw new Error(`Action OTP request failed for ${phone}`);
+  const peek = await api(`/api/auth/dev/otp?phone=${encodeURIComponent(phone)}`);
+  const code = peek.json.code;
+  if (!code) throw new Error(`No action OTP for ${phone}`);
+  return code;
+}
+
 const main = async () => {
   console.log('\n── Zemen API smoke test ─────────────────────────────');
 
@@ -61,16 +73,18 @@ const main = async () => {
   const agreed = await api(`/api/deals/${dealId}/respond`, { method: 'POST', token: sara.token, body: { accept: true } });
   check('deal agreed with terms hash', agreed.json.deal.status === 'agreed' && agreed.json.deal.terms_hash?.length === 64);
 
-  // 4. escrow funded (payer = Abebe)
-  const funded = await api(`/api/deals/${dealId}/escrow/deposit`, { method: 'POST', token: abebe.token });
-  check('escrow funded', funded.json.deal.escrow_state === 'funded', funded.json.deal.escrow_ref);
+  // 4. escrow funded (payer = Abebe) — high-stakes, needs a fresh action OTP
+  const escrowOtp = await actionOtp(abebe.token, '+251 911 000 001');
+  const funded = await api(`/api/deals/${dealId}/escrow/deposit`, { method: 'POST', token: abebe.token, body: { otp: escrowOtp } });
+  check('escrow funded', funded.status === 200 && funded.json.deal.escrow_state === 'funded', funded.json.deal?.escrow_ref);
 
   // 5. start → deliver → confirm
   await api(`/api/deals/${dealId}/start`, { method: 'POST', token: abebe.token });
   const delivered = await api(`/api/deals/${dealId}/deliver`, { method: 'POST', token: abebe.token });
   check('delivered', delivered.json.deal.status === 'delivered');
-  const confirmed = await api(`/api/deals/${dealId}/confirm`, { method: 'POST', token: sara.token });
-  check('confirmed + escrow released', confirmed.json.deal.status === 'confirmed' && confirmed.json.deal.escrow_state === 'released');
+  const confirmOtp = await actionOtp(sara.token, '+251 911 000 002');
+  const confirmed = await api(`/api/deals/${dealId}/confirm`, { method: 'POST', token: sara.token, body: { otp: confirmOtp } });
+  check('confirmed + escrow released', confirmed.status === 200 && confirmed.json.deal.status === 'confirmed' && confirmed.json.deal.escrow_state === 'released');
 
   // 6. ledger integrity
   const chain = await api('/api/ledger/verify', { token: abebe.token });

@@ -28,6 +28,11 @@ export async function api(path, { method = 'GET', body, token = getToken() } = {
     throw new ApiError(0, 'Cannot reach the server. Is it running?', 'network');
   }
 
+  // Silent refresh: a near-expiry token comes back with a fresh one in
+  // a response header; swap it in without forcing a re-login.
+  const refreshed = res.headers.get('x-zemen-refresh');
+  if (refreshed) setToken(refreshed);
+
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     if (res.status === 401 && token) {

@@ -23,6 +23,9 @@ export function genRef(prefix = 'ZMN') {
 
 export const genOtp = () => String(randomInt(100000, 1000000));
 
+/** Random hex id for session tokens / fingerprint storage. */
+export const genId = () => randomBytes(16).toString('hex');
+
 export const nowIso = () => new Date().toISOString();
 
 /** Normalise a phone number: digits only, keep leading + */

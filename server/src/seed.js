@@ -17,14 +17,16 @@ const DAY = 86400_000;
 const daysAgo = (n) => new Date(Date.now() - n * DAY).toISOString();
 const dateDaysAgo = (n) => daysAgo(n).slice(0, 10);
 
+// `verified: 'verified'` users also get a verified_at so the
+// unverified-lifetime-volume accounting is honest for seeded history.
 const USERS = [
-  { phone: '+251911000001', name: 'Abebe Kebede', category: 'freelance', bio: 'Graphic designer & web developer. Addis Ababa.', verified: 'verified' },
-  { phone: '+251911000002', name: 'Sara Tesfaye', category: 'trade', bio: 'Small trading — coffee & spices exporter.', verified: 'verified' },
+  { phone: '+251911000001', name: 'Abebe Kebede', category: 'freelance', bio: 'Graphic designer & web developer. Addis Ababa.', verified: 'verified', verifiedDaysAgo: 100 },
+  { phone: '+251911000002', name: 'Sara Tesfaye', category: 'trade', bio: 'Small trading — coffee & spices exporter.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000003', name: 'Bekele Alemu', category: 'agriculture', bio: 'Coffee farmer, Jimma region.', verified: 'pending' },
-  { phone: '+251911000004', name: 'Lidya Hailu', category: 'services', bio: 'Platform moderator & staff.', verified: 'verified', moderator: true, staff: true },
-  { phone: '+251911000005', name: 'Tesfaye Girma', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified' },
-  { phone: '+251911000006', name: 'Girma Haile', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified' },
-  { phone: '+251911000007', name: 'Hana Worku', category: 'agriculture', bio: 'Teff & wheat farmer, Arsi.', verified: 'verified' },
+  { phone: '+251911000004', name: 'Lidya Hailu', category: 'services', bio: 'Platform moderator & staff.', verified: 'verified', verifiedDaysAgo: 100, moderator: true, staff: true },
+  { phone: '+251911000005', name: 'Tesfaye Girma', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
+  { phone: '+251911000006', name: 'Girma Haile', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
+  { phone: '+251911000007', name: 'Hana Worku', category: 'agriculture', bio: 'Teff & wheat farmer, Arsi.', verified: 'verified', verifiedDaysAgo: 100 },
 ];
 
 /** Same terms hashing as the live service, so hashes are honest. */
@@ -54,9 +56,9 @@ export async function runSeed() {
   const ids = {};
   for (const u of USERS) {
     const { lastId } = await db.run(
-      `INSERT INTO users (phone, name, category, bio, id_verification_status, is_moderator, is_staff, report_token, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [u.phone, u.name, u.category, u.bio, u.verified, u.moderator ? 1 : 0, u.staff ? 1 : 0, genRef('RP'), daysAgo(120)]
+      `INSERT INTO users (phone, name, category, bio, id_verification_status, is_moderator, is_staff, report_token, verified_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [u.phone, u.name, u.category, u.bio, u.verified, u.moderator ? 1 : 0, u.staff ? 1 : 0, genRef('RP'), u.verifiedDaysAgo ? daysAgo(u.verifiedDaysAgo) : null, daysAgo(120)]
     );
     ids[u.phone] = lastId;
   }

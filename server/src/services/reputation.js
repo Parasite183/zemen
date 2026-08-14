@@ -125,4 +125,30 @@ export async function getReputation(userId) {
   return db.get('SELECT * FROM reputation_scores WHERE user_id = ?', [userId]);
 }
 
+// Fraud flags are owned by services/anti-fraud.js (clique / velocity /
+// device & IP clusters). They layer on top of the flags computed here,
+// which stay untouched. Flag codes in this set are replaced on every
+// fraud re-run so stale signals don't linger.
+const FRAUD_CODES = new Set(['closed_loop_clique', 'velocity_suspicious', 'device_cluster', 'ip_cluster']);
+
+/**
+ * Merge graph/velocity/cluster fraud flags into a user's reputation row,
+ * preserving the reputation-derived flags. Upserts a minimal row when the
+ * user has no reputation yet (e.g. brand-new clustered accounts).
+ */
+export async function mergeFraudFlags(userId, fraudFlags) {
+  const existing = await getReputation(userId);
+  const base = existing ? JSON.parse(existing.flags_json || '[]').filter((f) => !FRAUD_CODES.has(f.code)) : [];
+  const merged = [...base, ...fraudFlags];
+  const now = new Date().toISOString();
+  if (existing) {
+    await db.run(`UPDATE reputation_scores SET flags_json = ?, last_updated = ? WHERE user_id = ?`, [JSON.stringify(merged), now, userId]);
+  } else {
+    await db.run(
+      `INSERT INTO reputation_scores (user_id, flags_json, last_updated) VALUES (?, ?, ?)`,
+      [userId, JSON.stringify(merged), now]
+    );
+  }
+}
+
 const round = (n) => Math.round(n * 10000) / 10000;

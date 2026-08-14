@@ -11,10 +11,45 @@ const TABLES = (idCol) => [
     bio TEXT DEFAULT '',
     id_verification_status TEXT DEFAULT 'none',   -- none | pending | verified | rejected
     id_doc_path TEXT DEFAULT '',
+    -- identity / anti-sybil fields
+    verified_at TEXT,                             -- set when staff approves
+    device_fingerprint TEXT DEFAULT '',           -- coarse client fingerprint (fraud detection, not ads)
+    signup_ip TEXT DEFAULT '',                    -- /24 IPv4 prefix at signup
+    last_ip TEXT DEFAULT '',
+    id_number_hash TEXT DEFAULT '',               -- sha256 of normalized ID number
+    id_phash TEXT DEFAULT '',                     -- perceptual hash of document image
+    id_flag_reason TEXT DEFAULT '',               -- e.g. duplicate_id_document / duplicate_id_number
     is_moderator INTEGER DEFAULT 0,
     is_staff INTEGER DEFAULT 0,
     report_token TEXT UNIQUE,
     created_at TEXT NOT NULL
+  )`,
+
+  // Identity documents, one row per upload. Duplicate detection compares
+  // id_number_hash and the perceptual hash (phash) of the image.
+  `CREATE TABLE IF NOT EXISTS id_documents (
+    id ${idCol},
+    user_id INTEGER NOT NULL,
+    doc_type TEXT DEFAULT 'national_id',          -- national_id | business_license
+    id_number_hash TEXT DEFAULT '',
+    phash TEXT DEFAULT '',
+    file_sha256 TEXT DEFAULT '',                  -- exact byte hash of the uploaded file
+    file_path TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',                -- pending | approved | rejected | duplicate
+    reason TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+
+  // Server-side sessions backing the stateless JWT: every token carries a
+  // jti that must match a live (non-revoked) row here.
+  `CREATE TABLE IF NOT EXISTS sessions (
+    id ${idCol},
+    user_id INTEGER NOT NULL,
+    token_id TEXT UNIQUE NOT NULL,                -- the JWT's jti
+    device_info TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT,
+    revoked_at TEXT
   )`,
 
   `CREATE TABLE IF NOT EXISTS otp_codes (
@@ -129,6 +164,11 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx_id)',
   'CREATE INDEX IF NOT EXISTS idx_disputes_tx ON disputes(transaction_id)',
   'CREATE INDEX IF NOT EXISTS idx_users_category ON users(category)',
+  'CREATE INDEX IF NOT EXISTS idx_docs_user ON id_documents(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_docs_idnum ON id_documents(id_number_hash)',
+  'CREATE INDEX IF NOT EXISTS idx_docs_phash ON id_documents(phash)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_id)',
 ];
 
 /** Full DDL as executable statements (used by initSchema and the D1 seed dump). */
@@ -142,6 +182,41 @@ export async function initSchema() {
   for (const sql of tables) await db.run(sql);
   for (const sql of indexes) await db.run(sql);
   await migrateLedgerContent();
+  await migrateIdentityColumns();
+}
+
+/**
+ * DBs created before the identity columns existed need them added
+ * (CREATE TABLE IF NOT EXISTS never alters an existing table).
+ */
+async function migrateIdentityColumns() {
+  if (db.dialect === 'pg') {
+    const adds = [
+      'verified_at TEXT',
+      "device_fingerprint TEXT DEFAULT ''",
+      "signup_ip TEXT DEFAULT ''",
+      "last_ip TEXT DEFAULT ''",
+      "id_number_hash TEXT DEFAULT ''",
+      "id_phash TEXT DEFAULT ''",
+      "id_flag_reason TEXT DEFAULT ''",
+    ];
+    for (const ddl of adds) {
+      await db.run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${ddl}`);
+    }
+  } else {
+    const cols = await db.all(`SELECT name FROM pragma_table_info('users')`);
+    const have = new Set(cols.map((c) => c.name));
+    const add = (name, ddl) => (have.has(name) ? Promise.resolve() : db.run(`ALTER TABLE users ADD COLUMN ${ddl}`));
+    await add('verified_at', 'verified_at TEXT');
+    await add('device_fingerprint', "device_fingerprint TEXT DEFAULT ''");
+    await add('signup_ip', "signup_ip TEXT DEFAULT ''");
+    await add('last_ip', "last_ip TEXT DEFAULT ''");
+    await add('id_number_hash', "id_number_hash TEXT DEFAULT ''");
+    await add('id_phash', "id_phash TEXT DEFAULT ''");
+    await add('id_flag_reason', "id_flag_reason TEXT DEFAULT ''");
+  }
+  // Backfill: people already marked verified count as verified since signup.
+  await db.run("UPDATE users SET verified_at = COALESCE(verified_at, created_at) WHERE id_verification_status = 'verified'");
 }
 
 /** DBs created before the `content` column existed need it added. */

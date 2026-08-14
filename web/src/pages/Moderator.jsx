@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ShieldCheck, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, RefreshCw } from 'lucide-react';
 import { api } from '../api.js';
 import { useI18n } from '../i18n/index.jsx';
-import { Card, Spinner, Empty, StatusChip } from '../components/ui.jsx';
-import { money, timeAgo, shortDate } from '../lib.js';
+import { Card, Spinner, Empty, StatusChip, Button } from '../components/ui.jsx';
+import { money, timeAgo } from '../lib.js';
+
+// Short human signal for each flag code, so review is fast and explainable.
+const FLAG_SIGNAL = {
+  one_sided_concentration: 'concentration',
+  frequent_disputes: 'disputes',
+  closed_loop_clique: 'clique',
+  velocity_suspicious: 'velocity',
+  device_cluster: 'device cluster',
+  ip_cluster: 'IP cluster',
+};
 
 export default function Moderator() {
   const { t } = useI18n();
@@ -12,8 +22,9 @@ export default function Moderator() {
   const [flags, setFlags] = useState([]);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    Promise.all([
+  const load = () => {
+    setError('');
+    return Promise.all([
       api('/api/disputes/modqueue').then(({ disputes }) => setQueue(disputes)),
       api('/api/directory').then(async ({ results }) => {
         const flagged = [];
@@ -24,7 +35,19 @@ export default function Moderator() {
         setFlags(flagged);
       }),
     ]).catch((e) => setError(e.message));
-  }, []);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const refreshFraud = async () => {
+    setError('');
+    try {
+      await api('/api/mod/fraud/refresh', { method: 'POST' });
+      await load();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   if (error) return <Empty text={error} />;
   if (!queue) return <Spinner />;
@@ -58,7 +81,12 @@ export default function Moderator() {
       </div>
 
       <div>
-        <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-ink-soft">{t('mod.flagTitle')} · {flags.length}</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-ink-soft">{t('mod.flagTitle')} · {flags.length}</h2>
+          <Button size="sm" variant="secondary" onClick={refreshFraud}>
+            <RefreshCw size={13} /> {t('mod.refresh')}
+          </Button>
+        </div>
         {flags.length === 0 ? (
           <Card><Empty text={t('mod.noFlags')} /></Card>
         ) : (
@@ -70,7 +98,12 @@ export default function Moderator() {
                 </div>
                 <div className="mt-2 space-y-1">
                   {flags.map((f) => (
-                    <div key={f.code} className="rounded-lg bg-warn-soft px-3 py-1.5 text-xs font-medium text-warn">{f.label}</div>
+                    <div key={f.code} className="rounded-lg bg-warn-soft px-3 py-1.5 text-xs font-medium text-warn">
+                      <span className="mr-2 rounded bg-warn/15 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide">
+                        {FLAG_SIGNAL[f.code] || f.code}
+                      </span>
+                      {f.label}
+                    </div>
                   ))}
                 </div>
                 <Link to={`/u/${user.id}`} className="mt-2 inline-block text-xs font-semibold text-brand hover:underline">{t('common.view')}</Link>

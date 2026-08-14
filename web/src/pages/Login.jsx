@@ -5,6 +5,7 @@ import { api, setToken } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
 import { Button, Field, ErrorBox } from '../components/ui.jsx';
+import { deviceFingerprint } from '../fingerprint.js';
 
 const DEMOS = [
   { name: 'Abebe Kebede', phone: '+251911000001' },
@@ -40,7 +41,7 @@ export default function Login() {
     setBusy(true);
     setError('');
     try {
-      const data = await api('/api/auth/verify-otp', { method: 'POST', body: { phone, code } });
+      const data = await api('/api/auth/verify-otp', { method: 'POST', body: { phone, code, device: deviceFingerprint() } });
       setToken(data.token);
       await refresh(); // load the session into App state BEFORE navigating
       navigate(data.isNew ? '/onboarding' : '/', { replace: true });
