@@ -9,11 +9,22 @@
 // Anti-gaming: patterns typical of fake/colluding transactions are
 // flagged for moderator review rather than silently counted:
 //   • one-sided concentration (nearly all volume with one counterparty)
+//   • broad shallow network (one-off deals with many counterparties)
 //   • frequent disputes
 // ─────────────────────────────────────────────────────────────────────
 import { db } from '../db.js';
 
 const HALF_LIFE_DAYS = 180;
+
+// Broad-shallow-network flag: a hub doing one confirmed deal with each
+// of many throwaway spokes (who never trade each other) hides below the
+// one-sided-concentration bar, since volume is spread thin. Tuned
+// conservatively — a legitimately popular vendor is worse to flag than
+// a small ring that slips through — so a large completed-deal count is
+// required before this fires.
+const BROAD_NETWORK_MIN_COMPLETED = 15;          // completed deals…
+const BROAD_NETWORK_MIN_COUNTERPARTIES = 5;      // …spread across this many counterparties…
+const BROAD_NETWORK_MAX_AVG_DEALS = 1.2;         // …at ≤1.2 confirmed deals per counterparty
 
 /** Recency weight: 1.0 now, 0.5 after 6 months, 0.25 after a year. */
 function recencyWeight(iso) {
@@ -81,6 +92,15 @@ export async function computeReputation(userId) {
       flags.push({ code: 'one_sided_concentration', label: 'Unusually one-sided pattern — possible collusion' });
     }
   }
+  // Hub-and-spoke signature: an unusually high counterparty count paired
+  // with an unusually low avg-deals-per-counterparty — one-off deals with
+  // many spokes rather than organic repeat business.
+  const distinctCounterparties = Object.keys(volumeByCounterparty).length;
+  if (completed >= BROAD_NETWORK_MIN_COMPLETED &&
+      distinctCounterparties >= BROAD_NETWORK_MIN_COUNTERPARTIES &&
+      completed / distinctCounterparties <= BROAD_NETWORK_MAX_AVG_DEALS) {
+    flags.push({ code: 'broad_shallow_network', label: 'Broad network of one-off deals — possible hub-and-spoke collusion' });
+  }
   if (disputes.length >= 2 && disputeRate > 0.5) {
     flags.push({ code: 'frequent_disputes', label: 'Frequent dispute involvement' });
   }
@@ -129,7 +149,7 @@ export async function getReputation(userId) {
 // device & IP clusters). They layer on top of the flags computed here,
 // which stay untouched. Flag codes in this set are replaced on every
 // fraud re-run so stale signals don't linger.
-const FRAUD_CODES = new Set(['closed_loop_clique', 'velocity_suspicious', 'device_cluster', 'ip_cluster']);
+const FRAUD_CODES = new Set(['closed_loop_clique', 'hub_spoke_pattern', 'velocity_suspicious', 'device_cluster', 'ip_cluster']);
 
 /**
  * Merge graph/velocity/cluster fraud flags into a user's reputation row,

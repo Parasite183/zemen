@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────
 // Anti-gaming detection beyond the per-user reputation flags.
 //
-// Three graph/velocity checks surface coordinated, fabricated history
+// Four graph/velocity checks surface coordinated, fabricated history
 // to moderators — each with a specific, explainable signal:
 //   • closed_loop_clique   — a connected group that mostly trades with
 //                            itself (few outside parties)
@@ -9,6 +9,9 @@
 //                            many confirmed deals within 48h
 //   • device_cluster / ip_cluster — several new accounts from the same
 //                            device fingerprint or narrow IP range
+//   • hub_spoke_pattern    — a low-density component where one node
+//                            touches most of the edges (a single operator
+//                            dealing one-off with many throwaway spokes)
 //
 // These are simple connected-components + edge-density checks, exactly
 // as appropriate for an MVP — no graph-ML.
@@ -22,6 +25,8 @@ const VELOCITY_DEALS = 10;               // confirmed deals…
 const VELOCITY_WINDOW_MS = 48 * 3600e3;  // …within 48 hours
 const CLUSTER_MIN_ACCOUNTS = 3;          // accounts sharing a signal…
 const CLUSTER_WINDOW_MS = 7 * 86400e3;   // …created within 7 days
+const HUB_SPOKE_MIN_MEMBERS = CLUSTER_MIN_ACCOUNTS + 1; // hub + ≥ CLUSTER_MIN_ACCOUNTS spokes
+const HUB_SPOKE_MIN_HUB_SHARE = 0.8;     // one node touches ≥ 80% of the component's edges
 
 // Union-find so we can extract connected components cheaply.
 class UnionFind {
@@ -83,6 +88,64 @@ export function detectCliques(deals) {
       label: `Part of a closed trading clique (${g.members.length} accounts, ${Math.round(g.density * 100)}% internal) — possible coordinated accounts`,
     };
     for (const uid of g.members) flags.set(uid, desc);
+  }
+  return flags;
+}
+
+/**
+ * Extract wide hub-and-spoke shapes: low-density connected components
+ * (ones that FAIL the clique density bar) where a single node accounts
+ * for most of the internal edges — the signature of one operator
+ * dealing one-off with many throwaway spokes. Structured form powers
+ * the moderator cluster view; detectHubSpokes turns it into a per-user
+ * flag on the hub only.
+ */
+export function hubSpokeGroups(deals) {
+  const groups = [];
+  const edges = new Set();
+  for (const d of deals) edges.add(`${Math.min(d.party_a_id, d.party_b_id)}:${Math.max(d.party_a_id, d.party_b_id)}`);
+
+  for (const comp of componentsOf(deals)) {
+    const members = [...comp];
+    if (members.length < HUB_SPOKE_MIN_MEMBERS) continue;
+    const possible = (members.length * (members.length - 1)) / 2;
+    let internal = 0;
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        if (edges.has(`${Math.min(members[i], members[j])}:${Math.max(members[i], members[j])}`)) internal++;
+      }
+    }
+    if (internal === 0) continue;
+    const density = internal / possible;
+    if (density >= CLIQUE_MIN_DENSITY) continue; // dense enough to read as a clique — not hub-spoke
+
+    let hub = null, hubShare = 0;
+    for (let i = 0; i < members.length; i++) {
+      let incident = 0;
+      for (let j = 0; j < members.length; j++) {
+        if (i === j) continue;
+        if (edges.has(`${Math.min(members[i], members[j])}:${Math.max(members[i], members[j])}`)) incident++;
+      }
+      const share = incident / internal;
+      if (share > hubShare) { hubShare = share; hub = members[i]; }
+    }
+    if (hubShare >= HUB_SPOKE_MIN_HUB_SHARE) groups.push({ hub, members, internal, possible, density, hubShare });
+  }
+  return groups;
+}
+
+/**
+ * Flag the hub of a wide one-off trading network. Only the hub is
+ * flagged — the spokes stay visible as members in the cluster view — so
+ * a ring produces one flag rather than one per account.
+ */
+export function detectHubSpokes(deals) {
+  const flags = new Map();
+  for (const g of hubSpokeGroups(deals)) {
+    flags.set(g.hub, {
+      code: 'hub_spoke_pattern',
+      label: `Hub of a wide one-off trading network (${g.members.length} accounts, ${Math.round(g.hubShare * 100)}% of edges through one node) — possible coordinated spokes`,
+    });
   }
   return flags;
 }
@@ -174,7 +237,7 @@ export async function runFraudChecks() {
      WHERE status IN ('confirmed', 'failed')`
   );
   const all = new Map();
-  for (const m of [detectCliques(deals), await detectVelocity(), await detectClusters()]) {
+  for (const m of [detectCliques(deals), detectHubSpokes(deals), await detectVelocity(), await detectClusters()]) {
     for (const [uid, desc] of m) all.set(uid, desc);
   }
   for (const [uid, desc] of all) {
@@ -185,9 +248,10 @@ export async function runFraudChecks() {
 
 /**
  * Structured cluster data for the moderator review screen — the same
- * signals detectCliques / detectClusters / detectVelocity produce, but
- * with the actual member accounts attached so a reviewer can act on a
- * whole group rather than reading flag labels.
+ * signals detectCliques / detectHubSpokes / detectClusters /
+ * detectVelocity produce, but with the actual member accounts attached
+ * so a reviewer can act on a whole group rather than reading flag
+ * labels.
  */
 export async function fraudClustersForReview() {
   // No name filter here (unlike flaggedAccounts): fresh, unnamed
@@ -201,6 +265,7 @@ export async function fraudClustersForReview() {
   const member = (id) => ({ id, name: nameOf(id) });
 
   const cliques = cliqueGroups(deals).map((g) => ({ ...g, members: g.members.map(member) }));
+  const hubSpokes = hubSpokeGroups(deals).map((g) => ({ ...g, hub: member(g.hub), members: g.members.map(member) }));
 
   const withUsers = (groups) =>
     groups
@@ -214,5 +279,5 @@ export async function fraudClustersForReview() {
   const velocity = [];
   for (const [uid, desc] of await detectVelocity()) velocity.push({ user: member(uid), label: desc.label });
 
-  return { cliques, device: withUsers(device), ip: withUsers(ip), velocity };
+  return { cliques, hubSpokes, device: withUsers(device), ip: withUsers(ip), velocity };
 }

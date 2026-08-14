@@ -164,6 +164,7 @@ export default {
   'mod.noImage': 'No document image on file',
   'mod.clusters': 'Fraud clusters',
   'mod.clique': 'Trading clique — {n} accounts, {pct}% internal',
+  'mod.hubSpoke': 'Hub-spoke network — {hub} deals one-off with {n} accounts ({pct}% of edges through one node)',
   'mod.deviceCluster': 'Device cluster — {n} accounts share a fingerprint',
   'mod.ipCluster': 'IP cluster — {n} accounts share an IP range',
   'mod.refresh': 'Re-run fraud checks',

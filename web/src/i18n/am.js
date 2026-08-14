@@ -154,6 +154,7 @@ export default {
   'mod.noImage': 'የሰነድ ምስል የለም',
   'mod.clusters': 'የማጭበርበር ስብስቦች',
   'mod.clique': 'የንግድ ክሊክ — {n} መለያዎች፣ {pct}% ውስጣዊ',
+  'mod.hubSpoke': 'የማዕከል-ስፖክ አውታር — {hub} ከ{n} መለያዎች ጋር አንድ-ጊዜ ስምምነት አድርጓል ({pct}% ጠርዝ በአንድ መለያ)',
   'mod.deviceCluster': 'የመሣሪያ ስብስብ — {n} መለያዎች አንድ አሻራ ይጋራሉ',
   'mod.ipCluster': 'የIP ስብስብ — {n} መለያዎች አንድ ክልል ይጋራሉ',
   'mod.refresh': 'የማጭበርበር ምርመራዎችን እንደገና አካሂድ',

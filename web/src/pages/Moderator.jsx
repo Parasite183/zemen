@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ShieldCheck, AlertTriangle, RefreshCw, Network, Fingerprint, Zap, FileText } from 'lucide-react';
+import { ShieldCheck, AlertTriangle, RefreshCw, Network, Fingerprint, Zap, FileText, GitBranch } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
@@ -12,6 +12,8 @@ const FLAG_SIGNAL = {
   one_sided_concentration: 'concentration',
   frequent_disputes: 'disputes',
   closed_loop_clique: 'clique',
+  hub_spoke_pattern: 'hub-spoke',
+  broad_shallow_network: 'shallow network',
   velocity_suspicious: 'velocity',
   device_cluster: 'device cluster',
   ip_cluster: 'IP cluster',
@@ -81,7 +83,7 @@ export default function Moderator() {
   if (!queue || !review) return <Spinner />;
 
   const { documents, clusters, flaggedAccounts } = review;
-  const clusterCount = clusters.cliques.length + clusters.device.length + clusters.ip.length + clusters.velocity.length;
+  const clusterCount = clusters.cliques.length + clusters.hubSpokes.length + clusters.device.length + clusters.ip.length + clusters.velocity.length;
   const canDecide = !!user?.is_staff;
 
   return (
@@ -176,6 +178,15 @@ export default function Moderator() {
                 <div className="flex items-center gap-2 text-sm font-bold text-warn">
                   <Network size={15} />
                   {t('mod.clique', { n: g.members.length, pct: Math.round(g.density * 100) })}
+                </div>
+                <MemberChips members={g.members} />
+              </Card>
+            ))}
+            {clusters.hubSpokes.map((g, i) => (
+              <Card key={`hub-${i}`} className="border-warn/40">
+                <div className="flex items-center gap-2 text-sm font-bold text-warn">
+                  <GitBranch size={15} />
+                  {t('mod.hubSpoke', { hub: g.hub.name, n: g.members.length, pct: Math.round(g.hubShare * 100) })}
                 </div>
                 <MemberChips members={g.members} />
               </Card>

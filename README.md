@@ -228,6 +228,11 @@ hash to a public chain or a set of independent notaries). Nothing else in the co
   dedup, device/IP fingerprinting) and improves *detection* (clique, velocity, and concentration flags reviewed
   by moderators) — it does not make fabrication impossible. A motivated attacker with multiple SIMs, devices,
   and documents can still create multiple accounts.
+- Wide hub-and-spoke networks with distributed infrastructure (different devices/IPs per spoke) — a
+  coordinated operator trading one-off deals with many throwaway accounts (who never trade each other) defeats
+  the clique and concentration checks by construction; the hub-spoke and shallow-network flags raise it for
+  review, but a ring that varies infrastructure per spoke can still slip through, like the SMS/VOIP caveat
+  below, because every per-device signal is fresh.
 - Document dedup relies on a client-computed perceptual hash and a self-reported ID number; both are **flagged
   for manual review, not auto-trusted**. OCR of the ID number is a future improvement — today the applicant
   types it in.

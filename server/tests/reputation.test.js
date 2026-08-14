@@ -61,3 +61,27 @@ test('one-sided concentration triggers a flag after 3+ completed deals', async (
   const flags = JSON.parse(rep.flags_json);
   assert.ok(flags.some((f) => f.code === 'one_sided_concentration'), 'expected one-sided flag');
 });
+
+test('broad shallow network flags a hub spreading one-off deals across many spokes', async () => {
+  const hub = await mkUser('+251900000010', 'Hub');
+  for (let i = 0; i < 15; i++) {
+    const spoke = await mkUser('+2519000000' + (11 + i), 'Spoke' + i);
+    await mkDeal({ a: hub, b: spoke, amount: 1000, status: 'confirmed', confirmedAt: nowIso() });
+  }
+  const rep = await computeReputation(hub);
+  const flags = JSON.parse(rep.flags_json);
+  assert.ok(flags.some((f) => f.code === 'broad_shallow_network'), 'expected broad_shallow_network flag');
+});
+
+test('repeat-business user is not flagged as a broad shallow network', async () => {
+  const vendor = await mkUser('+251900000030', 'Vendor');
+  for (let i = 0; i < 3; i++) {
+    const customer = await mkUser('+2519000000' + (31 + i), 'Customer' + i);
+    for (let j = 0; j < 5; j++) {
+      await mkDeal({ a: vendor, b: customer, amount: 1000, status: 'confirmed', confirmedAt: nowIso() });
+    }
+  }
+  const rep = await computeReputation(vendor);
+  const flags = JSON.parse(rep.flags_json);
+  assert.ok(!flags.some((f) => f.code === 'broad_shallow_network'), 'repeat business must not be flagged');
+});
