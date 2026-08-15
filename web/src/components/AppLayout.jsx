@@ -4,19 +4,21 @@ import { useI18n } from '../i18n/index.jsx';
 import { Avatar } from './ui.jsx';
 import { cx } from '../lib.js';
 
-const items = (isMod) => [
+// Moderators, staff and owners all see the moderation page (staff and
+// owners additionally manage roles there).
+const items = (canModerate) => [
   { to: '/', key: 'nav.home', icon: Home, end: true },
   { to: '/deals', key: 'nav.deals', icon: Handshake },
   { to: '/directory', key: 'nav.directory', icon: Users },
   { to: '/disputes', key: 'nav.disputes', icon: Scale },
-  ...(isMod ? [{ to: '/moderator', key: 'nav.moderator', icon: ShieldCheck }] : []),
+  ...(canModerate ? [{ to: '/moderator', key: 'nav.moderator', icon: ShieldCheck }] : []),
   { to: '/profile', key: 'nav.profile', icon: UserCircle },
 ];
 
 export default function AppLayout({ user }) {
   const { t, locale, setLocale } = useI18n();
   const navigate = useNavigate();
-  const isMod = !!user?.is_moderator;
+  const canModerate = !!(user?.is_moderator || user?.is_staff || user?.is_owner);
 
   return (
     <div className="min-h-screen">
@@ -62,7 +64,7 @@ export default function AppLayout({ user }) {
         {/* desktop sidebar */}
         <aside className="no-print hidden w-44 shrink-0 md:block">
           <nav className="sticky top-20 space-y-1">
-            {items(isMod).map((it) => (
+            {items(canModerate).map((it) => (
               <NavLink
                 key={it.to}
                 to={it.to}
@@ -99,7 +101,7 @@ export default function AppLayout({ user }) {
       {/* mobile bottom nav */}
       <nav className="no-print fixed inset-x-0 bottom-0 z-20 border-t border-line bg-card/95 backdrop-blur md:hidden pb-[env(safe-area-inset-bottom)]">
         <div className="grid grid-cols-5">
-          {items(isMod).slice(0, 5).map((it) => (
+          {items(canModerate).slice(0, 5).map((it) => (
             <NavLink
               key={it.to}
               to={it.to}

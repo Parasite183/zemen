@@ -179,7 +179,7 @@ export default function Profile() {
         <p className="mt-2 truncate text-[10px] text-ink-soft">{reportUrl}</p>
       </Card>
 
-      {user.is_moderator && (
+      {(user.is_moderator || user.is_staff || user.is_owner) && (
         <Link to="/moderator" className="card flex items-center gap-3 px-4 py-3 transition-all hover:border-brand">
           <div className="flex h-9 w-9 items-center justify-center rounded-full bg-brand-soft text-brand"><Scale size={16} /></div>
           <div>
