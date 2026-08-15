@@ -27,6 +27,7 @@ const USERS = [
   { phone: '+251911000005', name: 'Tesfaye Girma', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000006', name: 'Girma Haile', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000007', name: 'Hana Worku', category: 'agriculture', bio: 'Teff & wheat farmer, Arsi.', verified: 'verified', verifiedDaysAgo: 100 },
+  { phone: '+251911000008', name: 'Meron Assefa', category: 'services', bio: 'Platform moderator & staff.', verified: 'verified', verifiedDaysAgo: 90, moderator: true, staff: true },
 ];
 
 /** Same terms hashing as the live service, so hashes are honest. */
@@ -235,7 +236,8 @@ export async function runSeed() {
   console.log('    Lidya Hailu    +251 911 000 004  (moderator & staff)');
   console.log('    Tesfaye Girma  +251 911 000 005  (flag example: one-sided pattern)');
   console.log('    Girma Haile    +251 911 000 006  (flag example)');
-  console.log('    Hana Worku     +251 911 000 007  (agriculture, verified)\n');
+  console.log('    Hana Worku     +251 911 000 007  (agriculture, verified)');
+  console.log('    Meron Assefa   +251 911 000 008  (moderator & staff)\n');
 }
 
 async function main() {

@@ -31,6 +31,17 @@ export const QUORUM_HIGH_VALUE = 3;
 export const QUORUM_LOW_VALUE = 1;
 export const MAX_APPEALS = 1;
 
+// Staff override is deliberately NOT a single-account shortcut: two
+// different staff accounts must independently sign off (propose, then
+// confirm the same verdict), each with a required written reason. A
+// staff account that leans on the override path more than this many
+// times in the window needs a third independent sign-off for its next
+// override — heavier use gets more scrutiny, not less.
+export const STAFF_OVERRIDE_SIGNOFFS = 2;
+export const STAFF_OVERRIDE_HEAVY_SIGNOFFS = 3;
+export const STAFF_OVERRIDE_RATE_LIMIT = 5;        // more than this many actions…
+export const STAFF_OVERRIDE_WINDOW_MS = 7 * 86400e3; // …in this window → heavy
+
 export async function createDispute({ transactionId, raisedBy, reason }) {
   const deal = await getDeal(transactionId);
   if (!deal) throw notFound('Deal not found');
@@ -59,11 +70,12 @@ export async function getDispute(id) {
 export async function getDisputeDetail(id) {
   const d = await getDispute(id);
   if (!d) return null;
-  const [tx, statements, evidence, votes] = await Promise.all([
+  const [tx, statements, evidence, votes, staffOverrides] = await Promise.all([
     getDeal(d.transaction_id),
     db.all('SELECT * FROM dispute_statements WHERE dispute_id = ? ORDER BY id ASC', [id]),
     db.all('SELECT * FROM dispute_evidence WHERE dispute_id = ? ORDER BY id ASC', [id]),
     db.all(`SELECT v.*, u.name AS moderator_name FROM dispute_votes v JOIN users u ON u.id = v.moderator_id WHERE v.dispute_id = ? ORDER BY v.id ASC`, [id]),
+    db.all(`SELECT o.*, u.name AS staff_name FROM dispute_staff_overrides o JOIN users u ON u.id = o.staff_id WHERE o.dispute_id = ? ORDER BY o.id ASC`, [id]),
   ]);
   // Appeals carry the original case's outcome so the fresh panel can
   // judge the reversal on the record. appeal_of can only point at an
@@ -72,7 +84,7 @@ export async function getDisputeDetail(id) {
     ? await db.get('SELECT id, verdict, resolution, resolved_at, appeal_of FROM disputes WHERE id = ?', [d.appeal_of])
     : null;
   const moderators = await db.all("SELECT id, name FROM users WHERE is_moderator = 1");
-  return { ...d, transaction: tx, statements, evidence, votes, moderators, original };
+  return { ...d, transaction: tx, statements, evidence, votes, moderators, original, staff_overrides: staffOverrides };
 }
 
 export async function addStatement(disputeId, user, body) {
@@ -302,14 +314,166 @@ export async function moderatorStats() {
   });
 }
 
-/** Staff shortcut: resolve immediately without waiting for votes. */
-export async function staffResolve(disputeId, verdict) {
+// ── staff override (two-person sign-off, not a single-account shortcut) ──
+// A proposal (verdict + required reason) does NOT resolve anything. A
+// second, different staff account must confirm the same verdict. If a
+// confirmer disagrees, the override is closed and the dispute goes back
+// to the normal moderator panel (castVote). Heavy override users need a
+// third sign-off. Both staff accounts run the same independence guard
+// as moderators (assertModeratorEligible), logged the same way.
+
+/** Number of override actions by this staff account inside the window. */
+async function overrideUsageInWindow(staffId) {
+  const windowStart = new Date(Date.now() - STAFF_OVERRIDE_WINDOW_MS).toISOString();
+  const { n } = await db.get(
+    'SELECT COUNT(*) AS n FROM dispute_staff_overrides WHERE staff_id = ? AND created_at >= ?',
+    [staffId, windowStart]
+  );
+  return n;
+}
+
+/**
+ * Step 1 of the override: a staff account proposes a verdict with a
+ * required written justification. Stored only — the dispute stays open
+ * until a second (or, for heavy users, third) independent staff account
+ * confirms the same verdict.
+ */
+export async function staffPropose(disputeId, staff, verdict, reason = '') {
   const d = await getDispute(disputeId);
   if (!d) throw notFound('Dispute not found');
   if (d.status === 'resolved') throw conflict('Dispute already resolved');
   if (!['party_a', 'party_b'].includes(verdict)) throw badRequest('Verdict must be party_a or party_b');
-  await applyResolution(disputeId, verdict, 'staff');
+  reason = String(reason || '').trim();
+  if (!reason) throw badRequest('A written justification is required for a staff override', 'reason_required');
+
+  // Same independence guard as moderators — a conflicted staff member
+  // is blocked and the attempt is logged identically.
+  await assertModeratorEligible(d, staff);
+
+  // One override attempt per dispute: after an override is applied or
+  // ends in disagreement, the case stays in the panel's hands.
+  const existing = await db.get('SELECT id FROM dispute_staff_overrides WHERE dispute_id = ?', [disputeId]);
+  if (existing) throw conflict('This dispute has already been through the staff override path');
+
+  const usage = await overrideUsageInWindow(staff.id);
+  const required = usage > STAFF_OVERRIDE_RATE_LIMIT ? STAFF_OVERRIDE_HEAVY_SIGNOFFS : STAFF_OVERRIDE_SIGNOFFS;
+  const now = nowIso();
+  await db.run(
+    `INSERT INTO dispute_staff_overrides (dispute_id, staff_id, action, verdict, reason, required_signoffs, status, created_at)
+     VALUES (?, ?, 'propose', ?, ?, ?, 'pending', ?)`,
+    [disputeId, staff.id, verdict, reason, required, now]
+  );
+  await appendLedger('staff_override_proposed', {
+    txId: d.transaction_id, userId: staff.id,
+    payload: { dispute: disputeId, verdict, reason, requiredSignoffs: required },
+  });
   return getDisputeDetail(disputeId);
+}
+
+/**
+ * Step 2 (and 3 for heavy users): a different staff account confirms.
+ * Matching verdict → the override collects a sign-off; once the number
+ * of distinct sign-offs reaches the requirement, the resolution applies.
+ * Differing verdict → disagreement: nothing resolves, the override is
+ * closed, and the dispute is left open for the normal moderator panel.
+ */
+export async function staffConfirm(disputeId, staff, verdict, reason = '') {
+  const d = await getDispute(disputeId);
+  if (!d) throw notFound('Dispute not found');
+  if (d.status === 'resolved') throw conflict('Dispute already resolved');
+  if (!['party_a', 'party_b'].includes(verdict)) throw badRequest('Verdict must be party_a or party_b');
+  reason = String(reason || '').trim();
+  if (!reason) throw badRequest('A written justification is required to confirm a staff override', 'reason_required');
+
+  await assertModeratorEligible(d, staff);
+
+  const rows = await db.all(
+    'SELECT * FROM dispute_staff_overrides WHERE dispute_id = ? ORDER BY id ASC', [disputeId]
+  );
+  const proposal = rows.find((r) => r.action === 'propose');
+  if (!proposal) throw badRequest('No staff override is pending — propose one first');
+  if (proposal.status !== 'pending') throw conflict('This staff override is no longer pending');
+  if (staff.id === proposal.staff_id) throw forbidden('The staff account that proposed cannot confirm its own override');
+  if (rows.some((r) => r.staff_id === staff.id)) throw conflict('This staff account has already acted on this override');
+
+  const now = nowIso();
+  if (verdict !== proposal.verdict) {
+    // Disagreement — never silently pick a side. Close the override and
+    // leave the dispute open for the quorum-panel path (castVote).
+    await db.run(
+      `INSERT INTO dispute_staff_overrides (dispute_id, staff_id, action, verdict, reason, required_signoffs, status, created_at)
+       VALUES (?, ?, 'confirm', ?, ?, ?, 'disagreed', ?)`,
+      [disputeId, staff.id, verdict, reason, proposal.required_signoffs, now]
+    );
+    await db.run("UPDATE dispute_staff_overrides SET status = 'disagreed' WHERE dispute_id = ?", [disputeId]);
+    await appendLedger('staff_override_disagreed', {
+      txId: d.transaction_id, userId: staff.id,
+      payload: { dispute: disputeId, proposedVerdict: proposal.verdict, disagreedVerdict: verdict, reason },
+    });
+    return getDisputeDetail(disputeId);
+  }
+
+  await db.run(
+    `INSERT INTO dispute_staff_overrides (dispute_id, staff_id, action, verdict, reason, required_signoffs, status, created_at)
+     VALUES (?, ?, 'confirm', ?, ?, ?, 'pending', ?)`,
+    [disputeId, staff.id, verdict, reason, proposal.required_signoffs, now]
+  );
+  const signoffs = (await db.all('SELECT id FROM dispute_staff_overrides WHERE dispute_id = ?', [disputeId])).length;
+  if (signoffs < proposal.required_signoffs) {
+    return getDisputeDetail(disputeId); // still collecting sign-offs
+  }
+
+  await applyResolution(disputeId, verdict, 'staff_override');
+  await db.run("UPDATE dispute_staff_overrides SET status = 'applied' WHERE dispute_id = ?", [disputeId]);
+  await appendLedger('staff_override_applied', {
+    txId: d.transaction_id, userId: staff.id,
+    payload: { dispute: disputeId, verdict, reason, signoffs },
+  });
+  return getDisputeDetail(disputeId);
+}
+
+/**
+ * Staff override track record for internal review — the same visibility
+ * moderators get for votes: overrides proposed/confirmed per staff
+ * account, and how often an override they participated in was later
+ * appealed and overturned.
+ */
+export async function staffStats() {
+  const [staff, overrides, appealFlips] = await Promise.all([
+    db.all('SELECT id, name FROM users WHERE is_staff = 1'),
+    db.all('SELECT * FROM dispute_staff_overrides ORDER BY id ASC'),
+    db.all(`SELECT appeal_of, verdict FROM disputes WHERE appeal_of IS NOT NULL AND status = 'resolved'`),
+  ]);
+
+  // Original dispute id -> appeal verdict (resolved appeals only).
+  const flipped = new Map();
+  for (const ap of appealFlips) flipped.set(ap.appeal_of, ap.verdict);
+
+  // Group override rows per dispute; status is mirrored across the rows.
+  const appliedByDispute = new Map();
+  for (const r of overrides) {
+    if (r.status === 'applied' && !appliedByDispute.has(r.dispute_id)) {
+      appliedByDispute.set(r.dispute_id, r.verdict);
+    }
+  }
+
+  return staff.map((s) => {
+    const mine = overrides.filter((r) => r.staff_id === s.id);
+    const participated = mine.filter((r) => appliedByDispute.has(r.dispute_id));
+    const overturned = participated.filter((r) => {
+      const appealVerdict = flipped.get(r.dispute_id);
+      return appealVerdict && appealVerdict !== r.verdict;
+    }).length;
+    return {
+      staff_id: s.id,
+      name: s.name,
+      overrides_proposed: mine.filter((r) => r.action === 'propose').length,
+      overrides_confirmed: mine.filter((r) => r.action === 'confirm').length,
+      overrides_participated: participated.length,
+      overturned_on_appeal: overturned,
+      overturned_rate: participated.length ? Math.round((overturned / participated.length) * 100) / 100 : null,
+    };
+  });
 }
 
 // ── resolution ──────────────────────────────────────────────────────

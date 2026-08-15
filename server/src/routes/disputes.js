@@ -5,7 +5,8 @@ import { authMiddleware, requireModerator, requireStaff } from '../auth.js';
 import { uploadEvidence } from '../uploads.js';
 import {
   createDispute, getDisputeDetail, addStatement, addEvidence,
-  moderatorQueue, castVote, staffResolve, requestAppeal, moderatorStats,
+  moderatorQueue, castVote, staffPropose, staffConfirm, requestAppeal,
+  moderatorStats, staffStats,
 } from '../services/disputes.js';
 
 const router = Router();
@@ -36,6 +37,12 @@ router.get('/moderators/stats', requireStaff, wrap(async (req, res) => {
   ok(res, { moderators: await moderatorStats() });
 }));
 
+// Internal staff-override track record — overrides are as visible and
+// accountable as moderator votes.
+router.get('/staff/stats', requireStaff, wrap(async (req, res) => {
+  ok(res, { staff: await staffStats() });
+}));
+
 router.get('/:id', wrap(async (req, res) => {
   const d = await getDisputeDetail(Number(req.params.id));
   if (!d) throw notFound('Dispute not found');
@@ -64,8 +71,19 @@ router.post('/:id/appeal', wrap(async (req, res) => {
   ok(res, { dispute: await requestAppeal(Number(req.params.id), req.user) });
 }));
 
+// Staff override is a two-person flow: `propose` stores a verdict +
+// required reason without resolving; `confirm` by a different staff
+// account applies it (a third sign-off is needed for heavy users). A
+// confirm with a different verdict closes the override and sends the
+// dispute back to the normal moderator panel.
 router.post('/:id/resolve', requireStaff, wrap(async (req, res) => {
-  ok(res, { dispute: await staffResolve(Number(req.params.id), req.body?.verdict) });
+  const id = Number(req.params.id);
+  const action = req.body?.action;
+  const verdict = req.body?.verdict;
+  const reason = req.body?.reason;
+  if (action === 'propose') return ok(res, { dispute: await staffPropose(id, req.user, verdict, reason) });
+  if (action === 'confirm') return ok(res, { dispute: await staffConfirm(id, req.user, verdict, reason) });
+  return ok(res, { error: 'action must be "propose" or "confirm"' }, 400);
 }));
 
 export default router;

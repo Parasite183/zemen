@@ -155,6 +155,26 @@ const TABLES = (idCol) => [
     created_at TEXT NOT NULL
   )`,
 
+  // Two-person staff override: a proposal (verdict + required reason)
+  // that only takes effect once a second, different staff account
+  // confirms the same verdict. Heavy users (> 5 override actions in 7
+  // days) need a third independent sign-off. A confirm that disagrees
+  // marks the override 'disagreed' and kicks the dispute back to the
+  // normal moderator panel. status is mirrored on every row of an
+  // override so queries are uniform.
+  `CREATE TABLE IF NOT EXISTS dispute_staff_overrides (
+    id ${idCol},
+    dispute_id INTEGER NOT NULL,
+    staff_id INTEGER NOT NULL,
+    action TEXT NOT NULL,                         -- propose | confirm
+    verdict TEXT NOT NULL,                        -- party_a | party_b
+    reason TEXT NOT NULL DEFAULT '',
+    required_signoffs INTEGER NOT NULL DEFAULT 2, -- 2, or 3 for heavy users
+    status TEXT DEFAULT 'pending',                -- pending | applied | disagreed
+    created_at TEXT NOT NULL,
+    UNIQUE(dispute_id, staff_id)
+  )`,
+
   `CREATE TABLE IF NOT EXISTS reputation_scores (
     user_id INTEGER PRIMARY KEY,
     completion_rate REAL DEFAULT 0,

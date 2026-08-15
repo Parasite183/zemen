@@ -17,6 +17,7 @@ export default function DisputeDetail() {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [staffReason, setStaffReason] = useState('');
 
   const load = useCallback(() => {
     api(`/api/disputes/${id}`).then(({ dispute }) => setDispute(dispute)).catch((e) => setError(e.message));
@@ -58,12 +59,17 @@ export default function DisputeDetail() {
     } catch (e) { setError(e.message); } finally { setBusy(''); }
   };
 
-  const staffResolve = async (v) => {
+  // Staff override is a two-person flow: propose (verdict + required
+  // reason) stores it without resolving; a second staff account must
+  // confirm the same verdict for it to take effect. Confirming the
+  // other side sends the case back to the moderator panel.
+  const staffOverride = async (action, v) => {
     setBusy('staff');
     setError('');
     try {
-      const { dispute } = await api(`/api/disputes/${id}/resolve`, { method: 'POST', body: { verdict: v } });
+      const { dispute } = await api(`/api/disputes/${id}/resolve`, { method: 'POST', body: { action, verdict: v, reason: staffReason } });
       setDispute(dispute);
+      setStaffReason('');
     } catch (e) { setError(e.message); } finally { setBusy(''); }
   };
 
@@ -75,6 +81,10 @@ export default function DisputeDetail() {
   const isParty = tx && (tx.party_a_id === user.id || tx.party_b_id === user.id);
   const open = dispute.status === 'open';
   const resolution = dispute.resolution;
+  const staffOverrides = dispute.staff_overrides || [];
+  const pendingOverride = staffOverrides.find((o) => o.status === 'pending');
+  const staffActed = !!pendingOverride && staffOverrides.some((o) => o.staff_id === user.id);
+  const pendingSignoffs = staffOverrides.filter((o) => o.status === 'pending').length;
   const partyNames = {
     party_a: tx?.party_a?.name || 'Party A',
     party_b: tx?.party_b?.name || 'Party B',
@@ -173,10 +183,34 @@ export default function DisputeDetail() {
           {user.is_staff && (
             <div className="mt-4 border-t border-line pt-3">
               <div className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-soft">{t('mod.staffResolve')}</div>
-              <div className="flex gap-2">
-                <Button variant="secondary" size="sm" onClick={() => staffResolve('party_a')} disabled={busy === 'staff'}>Party A wins</Button>
-                <Button variant="secondary" size="sm" onClick={() => staffResolve('party_b')} disabled={busy === 'staff'}>Party B wins</Button>
-              </div>
+              {pendingOverride ? (
+                staffActed ? (
+                  <p className="text-xs text-ink-soft">You have already acted on this override — {pendingSignoffs}/{pendingOverride.required_signoffs} sign-offs collected.</p>
+                ) : (
+                  <>
+                    <p className="mb-2 text-xs text-ink-soft">
+                      {pendingOverride.staff_name} proposed <span className="font-semibold">{partyNames[pendingOverride.verdict]}</span> — {pendingSignoffs}/{pendingOverride.required_signoffs} sign-offs. Confirm the same side to apply it; the other side sends the case back to the moderator panel.
+                    </p>
+                    <input className="input mb-2" value={staffReason} onChange={(e) => setStaffReason(e.target.value)} placeholder="Required justification (goes on the audit record)" />
+                    <div className="flex gap-2">
+                      <Button variant="secondary" size="sm" onClick={() => staffOverride('confirm', 'party_a')} disabled={busy === 'staff' || !staffReason.trim()}>Confirm Party A wins</Button>
+                      <Button variant="secondary" size="sm" onClick={() => staffOverride('confirm', 'party_b')} disabled={busy === 'staff' || !staffReason.trim()}>Confirm Party B wins</Button>
+                    </div>
+                  </>
+                )
+              ) : staffOverrides.length > 0 ? (
+                <p className="text-xs text-ink-soft">
+                  Staff override {staffOverrides[0].status === 'applied' ? 'applied.' : 'ended in disagreement — the case is back with the moderator panel.'}
+                </p>
+              ) : (
+                <>
+                  <input className="input mb-2" value={staffReason} onChange={(e) => setStaffReason(e.target.value)} placeholder="Required justification (goes on the audit record)" />
+                  <div className="flex gap-2">
+                    <Button variant="secondary" size="sm" onClick={() => staffOverride('propose', 'party_a')} disabled={busy === 'staff' || !staffReason.trim()}>Propose: Party A wins</Button>
+                    <Button variant="secondary" size="sm" onClick={() => staffOverride('propose', 'party_b')} disabled={busy === 'staff' || !staffReason.trim()}>Propose: Party B wins</Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
         </Card>

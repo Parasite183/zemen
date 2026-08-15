@@ -10,15 +10,16 @@ const { initSchema } = await import('../src/schema.js');
 const { nowIso } = await import('../src/crypto.js');
 const {
   castVote, requestAppeal, moderatorStats,
-  HIGH_VALUE_THRESHOLD_ETB,
+  staffPropose, staffConfirm, staffStats,
+  HIGH_VALUE_THRESHOLD_ETB, STAFF_OVERRIDE_RATE_LIMIT,
 } = await import('../src/services/disputes.js');
 
 let n = 0;
-async function mkUser({ name, moderator = false, fingerprint = '', ip = '' }) {
+async function mkUser({ name, moderator = false, staff = false, fingerprint = '', ip = '' }) {
   const { lastId } = await db.run(
-    `INSERT INTO users (phone, name, report_token, device_fingerprint, signup_ip, is_moderator, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ['+2519' + String(90000000 + ++n), name, 'DP-' + n, fingerprint, ip, moderator ? 1 : 0, nowIso()]
+    `INSERT INTO users (phone, name, report_token, device_fingerprint, signup_ip, is_moderator, is_staff, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ['+2519' + String(90000000 + ++n), name, 'DP-' + n, fingerprint, ip, moderator ? 1 : 0, staff ? 1 : 0, nowIso()]
   );
   return lastId;
 }
@@ -126,6 +127,158 @@ test('a low-value dispute resolves on a single moderator vote', async () => {
   const d = await db.get('SELECT * FROM disputes WHERE id = ?', [disputeId]);
   assert.equal(d.status, 'resolved', 'small disputes are cheap: one vote is enough');
   assert.equal(d.verdict, 'party_a');
+});
+
+test('a single staff override call never resolves a dispute and a reason is required', async () => {
+  const partyA = await mkUser({ name: 'PartyA6' });
+  const partyB = await mkUser({ name: 'PartyB6' });
+  const staff1 = await mkUser({ name: 'Staff1', staff: true });
+  const tx = await mkDeal({ a: partyA, b: partyB, amount: 500 });
+  const dId = await mkDispute({ txId: tx, raisedBy: partyA });
+
+  // No empty justification: whitespace-only reason is rejected.
+  await assert.rejects(staffPropose(dId, { id: staff1 }, 'party_a', '   '), (e) => e?.status === 400);
+  await staffPropose(dId, { id: staff1 }, 'party_a', 'Clear breach of the agreed terms');
+
+  const d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'open', 'a proposal must not resolve anything');
+  const rows = await db.all('SELECT * FROM dispute_staff_overrides WHERE dispute_id = ?', [dId]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].action, 'propose');
+  assert.equal(rows[0].status, 'pending');
+  assert.equal(rows[0].required_signoffs, 2);
+});
+
+test('a second staff account confirming the same verdict applies the override', async () => {
+  const partyA = await mkUser({ name: 'PartyA7' });
+  const partyB = await mkUser({ name: 'PartyB7' });
+  const staff1 = await mkUser({ name: 'Staff1b', staff: true });
+  const staff2 = await mkUser({ name: 'Staff2', staff: true });
+  const tx = await mkDeal({ a: partyA, b: partyB, amount: 500 });
+  const dId = await mkDispute({ txId: tx, raisedBy: partyA });
+
+  await staffPropose(dId, { id: staff1 }, 'party_a', 'Evidence favours A');
+  let d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'open');
+
+  // The proposer cannot confirm their own override.
+  await assert.rejects(staffConfirm(dId, { id: staff1 }, 'party_a', 'Self-confirm'), isForbidden);
+
+  await staffConfirm(dId, { id: staff2 }, 'party_a', 'Agreed — evidence favours A');
+  d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'resolved');
+  assert.equal(d.verdict, 'party_a');
+  const rows = await db.all('SELECT * FROM dispute_staff_overrides WHERE dispute_id = ?', [dId]);
+  assert.ok(rows.every((r) => r.status === 'applied'));
+
+  // Overrides are as visible as votes: staffStats tracks both accounts.
+  const stats = await staffStats();
+  const s1 = stats.find((s) => s.staff_id === staff1);
+  const s2 = stats.find((s) => s.staff_id === staff2);
+  assert.equal(s1.overrides_proposed, 1);
+  assert.equal(s2.overrides_confirmed, 1);
+  assert.equal(s1.overrides_participated, 1);
+  assert.equal(s2.overrides_participated, 1);
+
+  // An override that gets appealed and flipped shows up as overturned.
+  await requestAppeal(dId, { id: partyB });
+  const appeal = await db.get('SELECT * FROM disputes WHERE appeal_of = ?', [dId]);
+  const freshMod = await mkUser({ name: 'FreshMod', moderator: true });
+  await castVote(appeal.id, { id: freshMod }, 'party_b');
+  const overturned = await staffStats();
+  const s1o = overturned.find((s) => s.staff_id === staff1);
+  const s2o = overturned.find((s) => s.staff_id === staff2);
+  assert.equal(s1o.overturned_on_appeal, 1, 'proposer record shows the appeal reversal');
+  assert.equal(s2o.overturned_on_appeal, 1, 'confirmer record shows the appeal reversal');
+});
+
+test('a mismatched second staff verdict sends the dispute back to the moderator panel', async () => {
+  const partyA = await mkUser({ name: 'PartyA8' });
+  const partyB = await mkUser({ name: 'PartyB8' });
+  const staff1 = await mkUser({ name: 'Staff1c', staff: true });
+  const staff2 = await mkUser({ name: 'Staff2c', staff: true });
+  const m1 = await mkUser({ name: 'Mod1c', moderator: true });
+  const m2 = await mkUser({ name: 'Mod2c', moderator: true });
+  const m3 = await mkUser({ name: 'Mod3c', moderator: true });
+  const tx = await mkDeal({ a: partyA, b: partyB, amount: 3000 }); // high value → 3-vote panel
+  const dId = await mkDispute({ txId: tx, raisedBy: partyA });
+
+  await staffPropose(dId, { id: staff1 }, 'party_a', 'Favours A');
+  await staffConfirm(dId, { id: staff2 }, 'party_b', 'Disagree — the evidence favours B');
+  const d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'open', 'a disagreement must not silently pick a side');
+  assert.equal(d.verdict, '');
+  const rows = await db.all('SELECT * FROM dispute_staff_overrides WHERE dispute_id = ?', [dId]);
+  assert.ok(rows.every((r) => r.status === 'disagreed'));
+
+  // The override path is closed for this dispute — the panel decides.
+  await assert.rejects(staffPropose(dId, { id: staff2 }, 'party_a', 'try again'), isConflict);
+  await castVote(dId, { id: m1 }, 'party_b');
+  await castVote(dId, { id: m2 }, 'party_b');
+  await castVote(dId, { id: m3 }, 'party_a');
+  const after = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(after.status, 'resolved');
+  assert.equal(after.verdict, 'party_b', 'the panel majority decides after the override fails');
+});
+
+test('a conflicted staff account is blocked from the override exactly like a moderator', async () => {
+  const partyA = await mkUser({ name: 'PartyA9' });
+  const partyB = await mkUser({ name: 'PartyB9' });
+  const staffParty = await mkUser({ name: 'StaffParty', staff: true });
+  const staffCluster = await mkUser({ name: 'StaffCluster', staff: true, fingerprint: 'fp-shared-9' });
+  const staffPrior = await mkUser({ name: 'StaffPrior', staff: true });
+  await db.run(`UPDATE users SET device_fingerprint = 'fp-shared-9' WHERE id = ?`, [partyA]);
+
+  // A staff member who is a party to the dispute is blocked and logged.
+  const tx1 = await mkDeal({ a: staffParty, b: partyB, amount: 500 });
+  const d1 = await mkDispute({ txId: tx1, raisedBy: staffParty });
+  await assert.rejects(staffPropose(d1, { id: staffParty }, 'party_a', 'x'), isForbidden);
+  assert.ok(await db.get("SELECT id FROM dispute_moderator_log WHERE dispute_id = ? AND reason = 'is_party'", [d1]));
+
+  // A staff member sharing a device fingerprint with a party is blocked.
+  const tx2 = await mkDeal({ a: partyA, b: partyB, amount: 500 });
+  const d2 = await mkDispute({ txId: tx2, raisedBy: partyA });
+  await assert.rejects(staffPropose(d2, { id: staffCluster }, 'party_a', 'x'), isForbidden);
+  assert.ok(await db.get("SELECT id FROM dispute_moderator_log WHERE dispute_id = ? AND reason = 'device_ip_cluster'", [d2]));
+
+  // A staff member who previously transacted with a party is blocked.
+  await mkDeal({ a: staffPrior, b: partyA, amount: 300 });
+  const tx3 = await mkDeal({ a: partyA, b: partyB, amount: 500 });
+  const d3 = await mkDispute({ txId: tx3, raisedBy: partyA });
+  await assert.rejects(staffPropose(d3, { id: staffPrior }, 'party_a', 'x'), isForbidden);
+  assert.ok(await db.get("SELECT id FROM dispute_moderator_log WHERE dispute_id = ? AND reason = 'prior_transaction'", [d3]));
+});
+
+test('a heavy override user needs three sign-offs instead of two', async () => {
+  const staffA = await mkUser({ name: 'StaffHeavy', staff: true });
+  const staffB = await mkUser({ name: 'StaffB', staff: true });
+  const staffC = await mkUser({ name: 'StaffC', staff: true });
+
+  // staffA leans on the override path 6 times (> 5) inside the window.
+  for (let i = 0; i < STAFF_OVERRIDE_RATE_LIMIT + 1; i++) {
+    const pA = await mkUser({ name: 'PA' + i });
+    const pB = await mkUser({ name: 'PB' + i });
+    const tx = await mkDeal({ a: pA, b: pB, amount: 500 });
+    const dId = await mkDispute({ txId: tx, raisedBy: pA });
+    await staffPropose(dId, { id: staffA }, 'party_a', 'override ' + i);
+  }
+
+  const pA = await mkUser({ name: 'PAx' });
+  const pB = await mkUser({ name: 'PBx' });
+  const tx = await mkDeal({ a: pA, b: pB, amount: 500 });
+  const dId = await mkDispute({ txId: tx, raisedBy: pA });
+  await staffPropose(dId, { id: staffA }, 'party_b', 'heavy user override');
+  const proposal = await db.get('SELECT * FROM dispute_staff_overrides WHERE dispute_id = ?', [dId]);
+  assert.equal(proposal.required_signoffs, 3, 'heavy use escalates to three sign-offs');
+
+  await staffConfirm(dId, { id: staffB }, 'party_b', 'agree');
+  let d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'open', 'two sign-offs are not enough for a heavy user');
+
+  await staffConfirm(dId, { id: staffC }, 'party_b', 'also agree');
+  d = await db.get('SELECT * FROM disputes WHERE id = ?', [dId]);
+  assert.equal(d.status, 'resolved');
+  assert.equal(d.verdict, 'party_b');
 });
 
 test('an appeal excludes the original voters and records both outcomes', async () => {

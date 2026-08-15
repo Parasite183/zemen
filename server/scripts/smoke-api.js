@@ -123,6 +123,7 @@ const main = async () => {
   check('both parties filed statements', stmt2.json.dispute.statements.length === 2);
 
   const lidya = await login('+251 911 000 004');
+  const meron = await login('+251 911 000 008');
   const queue = await api('/api/disputes/modqueue', { token: lidya.token });
   check('moderator queue shows dispute', queue.json.disputes.some((d) => d.id === disputeId));
 
@@ -133,7 +134,8 @@ const main = async () => {
   // verdict party_a = deliverer (Abebe) wins → deal confirmed
   check('disputed deal confirmed (deliverer won)', deal2After.json.deal.status === 'confirmed');
 
-  // 11. staff shortcut resolve
+  // 11. staff override — two-person sign-off: a proposal alone must not
+  // resolve; a second, different staff account confirms it.
   const created3 = await api('/api/deals', {
     method: 'POST', token: sara.token,
     body: { phone: '+251911000001', description: 'Smoke test: staff resolve', deliverable: 'Y', amount: 700, currency: 'ETB', escrow: false },
@@ -143,8 +145,10 @@ const main = async () => {
   await api(`/api/deals/${deal3}/start`, { method: 'POST', token: sara.token });
   await api(`/api/deals/${deal3}/deliver`, { method: 'POST', token: sara.token });
   const d3 = await api('/api/disputes', { method: 'POST', token: abebe.token, body: { transaction_id: deal3, reason: 'Test staff path' } });
-  const resolved3 = await api(`/api/disputes/${d3.json.dispute.id}/resolve`, { method: 'POST', token: lidya.token, body: { verdict: 'party_b' } });
-  check('staff direct resolve works', resolved3.json.dispute.status === 'resolved');
+  const proposed = await api(`/api/disputes/${d3.json.dispute.id}/resolve`, { method: 'POST', token: lidya.token, body: { action: 'propose', verdict: 'party_b', reason: 'Smoke: staff override proposal' } });
+  check('staff proposal alone does not resolve', proposed.json.dispute.status === 'open');
+  const overrideConfirmed = await api(`/api/disputes/${d3.json.dispute.id}/resolve`, { method: 'POST', token: meron.token, body: { action: 'confirm', verdict: 'party_b', reason: 'Smoke: second staff agrees' } });
+  check('second staff confirm resolves the override', overrideConfirmed.json.dispute.status === 'resolved');
   const deal3After = await api(`/api/deals/${deal3}`, { token: sara.token });
   // verdict party_b ≠ deliverer (Sara) → payer wins → deal failed
   check('staff resolution marked deal failed', deal3After.json.deal.status === 'failed');
