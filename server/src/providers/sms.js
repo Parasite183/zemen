@@ -191,11 +191,14 @@ const africastalkingProvider = {
       }
       const d = await res.json();
       // Delivery-failure handling: AT returns one entry per recipient
-      // with a statusCode — 101 is "Success". Anything else means the
-      // message was NOT queued for delivery (bad number, blocked, etc.)
-      // and must surface loudly, not vanish.
+      // with a statusCode. 100/101/102 (Processed/Sent/Queued) are all
+      // acceptances — 102 in particular is the normal result with
+      // enqueue=1 ("accepted and queued for sending"). Anything else
+      // (4xx: bad number, blocked, insufficient balance, …) means the
+      // message was NOT queued for delivery and must surface loudly,
+      // not vanish.
       const recipients = d?.SMSMessageData?.Recipients || [];
-      const failed = recipients.filter((r) => r.statusCode !== 101);
+      const failed = recipients.filter((r) => ![100, 101, 102].includes(Number(r.statusCode)));
       if (failed.length) {
         const detail = failed.map((f) => `${f.number} → ${f.status || 'failed'} (${f.statusCode})`).join('; ');
         logger.error('sms_delivery_failed', { provider: 'africastalking', to: phone, detail });

@@ -179,7 +179,16 @@ test('africastalking send parses delivery status and surfaces failures', async (
     globalThis.fetch = originalFetch;
   }
 
-  // A non-101 statusCode is a delivery failure → loud error.
+  // 102 (Queued) is a normal acceptance with enqueue=1 — NOT a failure.
+  mockFetch(async () => jsonRes({ SMSMessageData: { Recipients: [{ statusCode: 102, messageId: 'mid-queued', status: 'Queued' }] } }));
+  try {
+    const queued = await africastalkingProvider.sendOtp('+251911000001', '123456');
+    assert.equal(queued.messageId, 'mid-queued');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // A non-acceptance statusCode (4xx) is a delivery failure → loud error.
   mockFetch(async () => jsonRes({ SMSMessageData: { Recipients: [{ statusCode: 406, number: '+251911000001', status: 'Banned' }] } }));
   try {
     await assert.rejects(africastalkingProvider.sendOtp('+251911000001', '123456'), /delivery failure/);
