@@ -28,8 +28,14 @@ transaction history, an optional escrow flow, structured dispute resolution, and
    link) is the artifact a user can hand to a bank, new client, or lender. One-sided collusion-like patterns are
    flagged for moderator review.
 4. **Dispute resolution** — structured flow: raise dispute → both parties file statements + evidence (photos/PDF) →
-   vetted moderators vote → outcome applied (deal confirmed & funds released, or failed & refunded) and logged
-   permanently against both records.
+   moderators vote → outcome applied (deal confirmed & funds released, or failed & refunded) and logged permanently
+   against both records. Moderators are **chosen manually, ad hoc** — staff flag accounts as moderators (`is_moderator`
+   in the DB, see the demo account below) — there is no public application or election process yet (see
+   [Known limitations](#known-limitations)). Once moderating, the flow is hardened so no single conflicted vote can
+   decide a case: every voter must be **independent** (never transacted with either party, not in the same device/IP
+   cluster), **high-value disputes (> 2,000 ETB) require a 3-moderator quorum** and resolve by majority while small
+   ones resolve on a single vote, every vote and its reasoning is stored for audit, and the **losing party gets one
+   appeal** judged by a fresh panel that excludes the original voters.
 5. **Discovery / directory** — searchable directory of verified users and businesses by category, so a good trust
    record actually helps find new counterparties.
 
@@ -54,7 +60,7 @@ and what is mocked:
 | Deal lifecycle | ✅ Implemented | create → accept terms (hashed) → fund escrow → start → deliver → confirm; guarded `UPDATE … WHERE status = expected` transitions. |
 | Tamper-evident ledger | ✅ Implemented | Append-only hash chain with per-entry content + link hashes, verifiable via `GET /api/ledger/verify`. Lives in the app database — **not** yet anchored to an external chain. |
 | Reputation engine | ✅ Implemented | Completion / on-time / dispute rates, total volume, 6-month half-life weighting, one-sided-collusion flags. |
-| Disputes + moderator votes | ✅ Implemented | Statements, evidence upload, votes, staff resolve, outcome applied to the deal + escrow. |
+| Disputes + moderator votes | ✅ Implemented | Statements, evidence upload, votes, staff resolve, outcome applied to the deal + escrow. Hardened: conflict-of-interest guard (prior dealings / device-IP cluster), 3-vote quorum above 2,000 ETB, one appeal per dispute on a fresh panel, per-moderator track record, blocked attempts logged. |
 | Directory & public profiles | ✅ Implemented | Searchable, phone masked on public pages, shareable trust report at `/r/<token>`. |
 | i18n (EN + AM) | ✅ Implemented | Amharic is a starter translation — extend `web/src/i18n/am.js`. |
 | SMS / OTP delivery | 🟡 **Real w/ fallback** | `server/src/providers/sms.js` calls Twilio or Africa's Talking when `SMS_PROVIDER` + credentials are set (number validation included), otherwise logs to the console. |
@@ -65,7 +71,10 @@ and what is mocked:
 
 > **Note on the deal lifecycle, ledger, and reputation math:** these were reviewed and deliberately **left
 > unchanged** by the identity-hardening work — the changes above (verification gates, dedup, fingerprinting,
-> anti-gaming flags, sessions) layer *around* them without altering their semantics.
+> anti-gaming flags, sessions) layer *around* them without altering their semantics. The same holds for the
+> dispute-hardening work: conflict-of-interest guards, quorum voting, and the appeal path touch only the disputes
+> module (plus its own tables and routes); the deal lifecycle, ledger, reputation engine, and anti-fraud checks
+> are untouched.
 
 ---
 
@@ -241,6 +250,11 @@ hash to a public chain or a set of independent notaries). Nothing else in the co
 - VOIP-number rejection depends on the SMS provider's line-type data, which is imperfect and may have
   geographic blind spots (including for Ethiopian numbers).
 - **Session tokens are still JWTs signed with `JWT_SECRET`** — set a real secret before any non-demo deployment.
+- **Moderator selection itself isn't yet a solved trust problem.** Dispute resolution is hardened so a conflicted
+  or sub-quorum vote can't decide a case, but the platform still ultimately vouches for *who is allowed to judge*:
+  staff manually flip `is_moderator` on accounts, with no public application, election, or reputation-gated
+  progression for moderators. That is the same centralization caveat noted for the ledger — if trust in the
+  operator ever becomes a concern, moderator selection is the next seam to decentralize.
 
 ## Security notes (prototype-grade)
 
@@ -293,7 +307,8 @@ Local emulation: `npx wrangler dev` (miniflare provides local D1 + R2).
 ## Tests
 
 ```bash
-npm test                          # 7 unit tests: ledger integrity (+tamper), reputation math, hashing
+npm test                          # unit tests: ledger integrity (+tamper), reputation math, hashing,
+                                  # identity dedup, anti-fraud signals, dispute guards/quorum/appeal
 npm run dev                       # (in another terminal)
 node server/scripts/smoke-api.js  # 21-step API end-to-end: auth → deal → escrow → dispute → report
 node server/scripts/ui-smoke.js   # real-Chrome click-through (mobile viewport), screenshots in server/scripts/shots/

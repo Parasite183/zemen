@@ -111,6 +111,8 @@ const TABLES = (idCol) => [
     status TEXT DEFAULT 'open',                   -- open | resolved
     resolution TEXT DEFAULT '',                   -- confirmed | failed
     verdict TEXT DEFAULT '',                      -- party_a | party_b
+    appeal_of INTEGER,                            -- original dispute id when this row is an appeal
+    appealed_at TEXT,                             -- set on the original when its one appeal is filed
     created_at TEXT NOT NULL,
     resolved_at TEXT
   )`,
@@ -142,6 +144,17 @@ const TABLES = (idCol) => [
     UNIQUE(dispute_id, moderator_id)
   )`,
 
+  // Audit trail of moderator actions blocked by the independence
+  // guards (prior dealings, shared device/IP cluster, appeal-voter
+  // exclusion) — surfaced internally, never to the parties.
+  `CREATE TABLE IF NOT EXISTS dispute_moderator_log (
+    id ${idCol},
+    dispute_id INTEGER NOT NULL,
+    moderator_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,                         -- prior_transaction | is_party | device_ip_cluster | appeal_original_voter
+    created_at TEXT NOT NULL
+  )`,
+
   `CREATE TABLE IF NOT EXISTS reputation_scores (
     user_id INTEGER PRIMARY KEY,
     completion_rate REAL DEFAULT 0,
@@ -163,6 +176,7 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)',
   'CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx_id)',
   'CREATE INDEX IF NOT EXISTS idx_disputes_tx ON disputes(transaction_id)',
+  'CREATE INDEX IF NOT EXISTS idx_disputes_appeal ON disputes(appeal_of)',
   'CREATE INDEX IF NOT EXISTS idx_users_category ON users(category)',
   'CREATE INDEX IF NOT EXISTS idx_docs_user ON id_documents(user_id)',
   'CREATE INDEX IF NOT EXISTS idx_docs_idnum ON id_documents(id_number_hash)',
@@ -183,6 +197,7 @@ export async function initSchema() {
   for (const sql of indexes) await db.run(sql);
   await migrateLedgerContent();
   await migrateIdentityColumns();
+  await migrateDisputeColumns();
 }
 
 /**
@@ -229,4 +244,19 @@ async function migrateLedgerContent() {
   if (!cols.some((c) => c.name === 'content')) {
     await db.run(`ALTER TABLE ledger ADD COLUMN content TEXT NOT NULL DEFAULT ''`);
   }
+}
+
+/** DBs created before dispute appeals existed need the new columns. */
+async function migrateDisputeColumns() {
+  if (db.dialect === 'pg') {
+    for (const ddl of ['appeal_of INTEGER', 'appealed_at TEXT']) {
+      await db.run(`ALTER TABLE disputes ADD COLUMN IF NOT EXISTS ${ddl}`);
+    }
+    return;
+  }
+  const cols = await db.all(`SELECT name FROM pragma_table_info('disputes')`);
+  const have = new Set(cols.map((c) => c.name));
+  const add = (name, ddl) => (have.has(name) ? Promise.resolve() : db.run(`ALTER TABLE disputes ADD COLUMN ${ddl}`));
+  await add('appeal_of', 'appeal_of INTEGER');
+  await add('appealed_at', 'appealed_at TEXT');
 }

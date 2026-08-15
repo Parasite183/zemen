@@ -5,7 +5,7 @@ import { authMiddleware, requireModerator, requireStaff } from '../auth.js';
 import { uploadEvidence } from '../uploads.js';
 import {
   createDispute, getDisputeDetail, addStatement, addEvidence,
-  moderatorQueue, castVote, staffResolve,
+  moderatorQueue, castVote, staffResolve, requestAppeal, moderatorStats,
 } from '../services/disputes.js';
 
 const router = Router();
@@ -31,6 +31,11 @@ router.get('/modqueue', requireModerator, wrap(async (req, res) => {
   ok(res, { disputes: await moderatorQueue() });
 }));
 
+// Internal moderator track record (staff-only review surface).
+router.get('/moderators/stats', requireStaff, wrap(async (req, res) => {
+  ok(res, { moderators: await moderatorStats() });
+}));
+
 router.get('/:id', wrap(async (req, res) => {
   const d = await getDisputeDetail(Number(req.params.id));
   if (!d) throw notFound('Dispute not found');
@@ -51,6 +56,12 @@ router.post('/:id/evidence', uploadEvidence, wrap(async (req, res) => {
 
 router.post('/:id/vote', requireModerator, wrap(async (req, res) => {
   ok(res, { dispute: await castVote(Number(req.params.id), req.user, req.body?.verdict, req.body?.note) });
+}));
+
+// The losing party files exactly one appeal per dispute; it is judged
+// by a fresh panel excluding the original voters.
+router.post('/:id/appeal', wrap(async (req, res) => {
+  ok(res, { dispute: await requestAppeal(Number(req.params.id), req.user) });
 }));
 
 router.post('/:id/resolve', requireStaff, wrap(async (req, res) => {
