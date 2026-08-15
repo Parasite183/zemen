@@ -23,7 +23,9 @@ list of what is missing. There are **no hardcoded fallbacks** for secrets.
 | `PAYMENT_PROVIDER` | yes | `chapa`. `stub` (dev) is refused in production. |
 | `CHAPA_SECRET_KEY` | yes | Server-side key from the Chapa dashboard (Settings → API Keys). Never expose in the frontend. |
 | `CHAPA_WEBHOOK_SECRET` | yes | The webhook secret hash you set in the Chapa dashboard; used to verify `chapa-signature` / `x-chapa-signature` headers. |
-| `CHAPA_API_URL` | no | Defaults to `https://api.chapa.global` (v2). |
+| `CHAPA_API_VERSION` | yes | `v1` or `v2` — **must match the platform that issued your secret key.** v1 (classic) keys start `CHASECK_...` / `CHASECK_TEST_...`, API at `api.chapa.co`; v2 (new) keys start `CHAPA_...`, API at `api.chapa.global`. A mismatch returns Chapa 401 `Invalid API key or User does not exist`. |
+| `CHAPA_API_URL` | no | Defaults per version (`https://api.chapa.co` for v1, `https://api.chapa.global` for v2); override only if Chapa changes their host. |
+| `CHAPA_PAYOUT_BANK_SLUG` | no | v1 payouts move money to a mobile-money provider listed in Chapa's bank list; default `telebirr`. |
 | `DATABASE_URL` | for Postgres | Leave unset to use SQLite locally; on Cloudflare the D1 binding is used instead. |
 | `DEFAULT_CURRENCY`, `FREE_DEAL_THRESHOLD_ETB`, `UNVERIFIED_LIFETIME_VOLUME_ETB`, `SMS_VOIP_BLOCK`, `JWT_TTL` | no | Have sensible defaults; tune deliberately. |
 
@@ -39,14 +41,25 @@ env vars to the Worker); non-secret vars live in `wrangler.jsonc` `vars`.
   Payment flow is **non-custodial**: Zemen never holds funds. `deposit()`
   creates a Chapa **hosted checkout**; the payer completes payment on
   Chapa's page; Chapa's webhook (HMAC-verified, then **re-verified
-  server-side** against `GET /v2/payments/{reference}/verify`) flips the
-  deal's escrow to `funded`. `release()` / `refund()` initiate Chapa
-  **payouts** to the winner's mobile-money wallet.
-  > **Verify before launch:** the payout recipient schema in
-  > `server/src/providers/payments.js` (`_payout`) is written against the
-  > documented v2 shape — confirm the exact `recipient` fields for your
-  > Chapa plan in their payout docs and adjust if needed. Also confirm your
-  > plan actually supports payouts to Telebirr wallet numbers.
+  server-side**) flips the deal's escrow to `funded`. `release()` /
+  `refund()` initiate Chapa **payouts** to the winner's mobile-money
+  wallet.
+  **Two platforms, one provider:** `CHAPA_API_VERSION` must match the
+  account that issued your key. v1 (classic, `CHASECK_TEST_...` keys) uses
+  `POST /v1/transaction/initialize` (hosted checkout), verifies by
+  **tx_ref** (`GET /v1/transaction/verify/{tx_ref}` — our deal ref), and
+  pays out via `POST /v1/transfers` with the mobile-money provider's
+  `bank_code` (resolved from `GET /v1/banks`). v2 (new, `CHAPA_...` keys)
+  uses `POST /v2/payments/hosted`, `GET /v2/payments/{reference}/verify`,
+  and `POST /v2/payouts/transfers`. Both platforms sign webhooks with
+  HMAC-SHA256 (`chapa-signature` / `x-chapa-signature`) — verified, then
+  always re-verified server-side before escrow flips to `funded`.
+  > **Test mode note:** v1 test keys (`CHASECK_TEST_...`) make Chapa
+  > **simulate** transfers (`status: success`) — payouts on test keys do
+  > not move real money. Live keys omit the simulation flag.
+  > **Verify before launch:** confirm your Chapa plan supports payouts to
+  > Telebirr wallet numbers (`CHAPA_PAYOUT_BANK_SLUG`, default `telebirr`)
+  > and that the v1 transfers payload matches your account's bank list.
 - **SMS — Africa's Talking (or Twilio).** Create an AT account (sandbox → live
   production shortcode/long code). Set the sender in `AFRICASTALKING_FROM`.
   Enable the **delivery-report webhook** in the AT dashboard if you want

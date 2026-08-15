@@ -45,9 +45,20 @@ export const config = {
   // REJECTED in production by validateConfig().
   paymentProvider: env.PAYMENT_PROVIDER || 'stub',
   chapa: {
-    apiUrl: env.CHAPA_API_URL || 'https://api.chapa.global',
+    // Chapa has two platforms with different key formats:
+    //   v1 (classic) — keys start CHASECK_... / CHASECK_TEST_..., API at
+    //     https://api.chapa.co (hosted checkout /v1/transaction/initialize)
+    //   v2 (new)     — keys start CHAPA_..., API at https://api.chapa.global
+    //     (hosted checkout /v2/payments/hosted)
+    // The version must match the account that issued the secret key, or
+    // Chapa answers 401 "Invalid API key or User does not exist".
+    version: env.CHAPA_API_VERSION || 'v2',
+    apiUrl: env.CHAPA_API_URL || (env.CHAPA_API_VERSION === 'v1' ? 'https://api.chapa.co' : 'https://api.chapa.global'),
     secretKey: env.CHAPA_SECRET_KEY || '',
     webhookSecret: env.CHAPA_WEBHOOK_SECRET || '',
+    // v1 payouts move money to a mobile-money provider listed in Chapa's
+    // bank list (Telebirr, M-Pesa, CBE Birr...) — selected by slug.
+    payoutBankSlug: env.CHAPA_PAYOUT_BANK_SLUG || 'telebirr',
   },
 
   // JWT session lifetime.
@@ -100,6 +111,7 @@ export function validateConfig() {
   } else if (config.paymentProvider === 'chapa') {
     if (!config.chapa.secretKey) problems.push({ name: 'CHAPA_SECRET_KEY', message: 'required when PAYMENT_PROVIDER=chapa' });
     if (!config.chapa.webhookSecret) problems.push({ name: 'CHAPA_WEBHOOK_SECRET', message: 'required when PAYMENT_PROVIDER=chapa' });
+    if (!['v1', 'v2'].includes(config.chapa.version)) problems.push({ name: 'CHAPA_API_VERSION', message: 'must be v1 or v2 (matches the platform that issued your secret key)' });
   } else {
     problems.push({ name: 'PAYMENT_PROVIDER', message: `unknown provider "${config.paymentProvider}"` });
   }

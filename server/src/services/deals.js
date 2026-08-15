@@ -264,9 +264,9 @@ export async function confirmDeal(id, user, otp) {
     if (d.escrow_enabled && d.escrow_state === 'funded') {
       // Non-custodial release: payout the escrowed funds to the
       // deliverer's mobile-money wallet (provider confirms the state).
-      const deliverer = await db.get('SELECT phone FROM users WHERE id = ?', [d.delivered_by]);
+      const deliverer = await db.get('SELECT phone, name FROM users WHERE id = ?', [d.delivered_by]);
       const result = await paymentsProvider.release({
-        amount: d.amount, currency: d.currency, ref: d.ref, toPhone: deliverer?.phone,
+        amount: d.amount, currency: d.currency, ref: d.ref, toPhone: deliverer?.phone, toName: deliverer?.name,
       });
       const { rowCount: released } = await db.run(
         `UPDATE transactions SET escrow_state = ?, escrow_ref = ? WHERE id = ? AND escrow_state = 'funded'`,

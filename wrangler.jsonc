@@ -7,7 +7,11 @@
   "workers_dev": true,
   "vars": {
     "DEFAULT_CURRENCY": "ETB",
-    "DEV_MODE": "false"
+    "DEV_MODE": "false",
+    // Chapa platform version — must match the account that issued
+    // CHAPA_SECRET_KEY. v1 = classic (api.chapa.co, CHASECK_... keys),
+    // v2 = new (api.chapa.global, CHAPA_... keys).
+    "CHAPA_API_VERSION": "v1"
   },
   // better-sqlite3 (native) and pg cannot run on Workers — the D1
   // driver replaces them, so these imports are stubbed at build time.

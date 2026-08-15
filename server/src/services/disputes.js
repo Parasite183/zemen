@@ -516,10 +516,10 @@ async function applyResolution(disputeId, verdict, by) {
     if (deal.escrow_enabled && deal.escrow_state === 'funded') {
       // Non-custodial payout: the winner's mobile-money wallet receives
       // the escrowed funds via the provider (state recorded, not held).
-      const winner = await db.get('SELECT phone FROM users WHERE id = ?', [winnerId]);
+      const winner = await db.get('SELECT phone, name FROM users WHERE id = ?', [winnerId]);
       const call = resolution === 'confirmed'
-        ? () => paymentsProvider.release({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone })
-        : () => paymentsProvider.refund({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone });
+        ? () => paymentsProvider.release({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone, toName: winner?.name })
+        : () => paymentsProvider.refund({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone, toName: winner?.name });
       const result = await call();
       await db.run(`UPDATE transactions SET escrow_state = ?, escrow_ref = ? WHERE id = ?`,
         [result.status, result.reference, deal.id]);

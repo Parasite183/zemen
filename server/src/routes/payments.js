@@ -65,7 +65,11 @@ router.post('/webhook', wrap(async (req, res) => {
   // Idempotent + guarded: only a 'pending' escrow can be flipped; a
   // replayed success event for an already-funded deal changes nothing.
   if (event.event === 'charge.success' && deal.escrow_state === 'pending') {
-    const providerRef = event.reference || deal.escrow_ref || ref;
+    // escrow_ref was set at deposit to the correct verify key for this
+    // provider version (v1: our deal ref/tx_ref; v2: Chapa's reference) —
+    // prefer it over the webhook's Chapa-internal reference, which v1's
+    // verify endpoint does not accept.
+    const providerRef = deal.escrow_ref || ref;
     const confirmed = await paymentsProvider.confirmPayment(providerRef);
     if (confirmed.confirmed) {
       const { rowCount } = await db.run(

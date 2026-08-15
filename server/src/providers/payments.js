@@ -64,11 +64,38 @@ const stubProvider = {
 };
 
 // ── chapa (production, hosted checkout + HMAC webhooks) ──────────────
+// Two platforms, one provider. Chapa v1 (api.chapa.co, CHASECK_... keys)
+// and v2 (api.chapa.global, CHAPA_... keys) have different key formats
+// and endpoint shapes — the version must match the account that issued
+// the secret key or Chapa answers 401 "Invalid API key or User does not
+// exist". config.chapa.version selects the right API surface.
 function chapaSecret() {
   if (!config.chapa.secretKey) {
     throw new Error('CHAPA_SECRET_KEY is not configured — refusing to call Chapa');
   }
   return config.chapa.secretKey;
+}
+
+/** v1 test keys carry _TEST_ and Chapa only simulates transfers on them. */
+function chapaIsTestMode() {
+  return /_TEST_/.test(config.chapa.secretKey);
+}
+
+// The v1 transfers API pays into an account by bank_code (mobile money
+// providers like Telebirr are in the bank list as is_mobilemoney). The
+// id is account/plan specific — resolve it once from /v1/banks instead
+// of hardcoding.
+let v1BankIdPromise = null;
+async function v1BankId(slug) {
+  if (!v1BankIdPromise) {
+    v1BankIdPromise = chapaFetch('/v1/banks').then((json) => {
+      const list = json?.data || [];
+      const bank = list.find((b) => String(b.slug).toLowerCase() === slug.toLowerCase());
+      if (!bank?.id) throw new Error(`Chapa v1 has no payout bank "${slug}" — check CHAPA_PAYOUT_BANK_SLUG`);
+      return bank.id;
+    });
+  }
+  return v1BankIdPromise;
 }
 
 async function chapaFetch(path, { method = 'GET', body } = {}) {
@@ -117,25 +144,26 @@ const chapaProvider = {
    * payment on Chapa's page and Chapa confirms it to us by webhook.
    * Returns { status: 'pending', reference, checkoutUrl } — the deal's
    * escrow_state moves to 'pending' until the webhook (re-verified
-   * server-side) flips it to 'funded'.
+   * server-side) flips it to 'funded'. v1 verifies by tx_ref (our ref), so
+   * reference is always our deal ref.
    */
   async deposit({ amount, currency, ref }) {
-    const json = await chapaFetch('/v2/payments/hosted', {
+    const v1 = config.chapa.version === 'v1';
+    const json = await chapaFetch(v1 ? '/v1/transaction/initialize' : '/v2/payments/hosted', {
       method: 'POST',
-      body: {
-        amount,
-        currency,
-        merchant_reference: ref, // echoed back to us in webhooks as tx_ref/merchant_reference
-        meta: { deal_ref: ref },
-      },
+      body: v1
+        ? { amount, currency, tx_ref: ref } // v1 echoes tx_ref back in webhooks
+        : { amount, currency, merchant_reference: ref, meta: { deal_ref: ref } },
     });
     const checkoutUrl = json?.data?.checkout_url;
     if (!checkoutUrl) {
-      logger.error('payment_provider_error', { provider: 'chapa', path: '/v2/payments/hosted', phase: 'response' });
+      logger.error('payment_provider_error', { provider: 'chapa', path: v1 ? '/v1/transaction/initialize' : '/v2/payments/hosted', phase: 'response' });
       throw new Error('Chapa hosted checkout returned no checkout_url — payment page unavailable');
     }
-    const reference = json?.data?.reference || json?.data?.merchant_reference || ref;
-    logger.info('payment_checkout_created', { provider: 'chapa', reference, checkoutUrl });
+    // v1 has no separate payment reference — the tx_ref IS our deal ref,
+    // and that is exactly what v1's verify endpoint expects.
+    const reference = v1 ? ref : (json?.data?.reference || json?.data?.merchant_reference || ref);
+    logger.info('payment_checkout_created', { provider: 'chapa', version: config.chapa.version, reference, checkoutUrl });
     return { status: 'pending', reference, checkoutUrl, providerName: 'chapa' };
   },
 
@@ -169,14 +197,19 @@ const chapaProvider = {
   /**
    * Server-side re-verification of a payment — ALWAYS called after a
    * webhook before recording escrow as funded (never trust the webhook
-   * body alone). GET /v2/payments/{reference}/verify.
+   * body alone). v2: GET /v2/payments/{reference}/verify. v1: GET
+   * /v1/transaction/verify/{tx_ref} — where the reference is OUR deal
+   * ref, not a Chapa-internal id.
    */
   async confirmPayment(reference) {
-    const json = await chapaFetch(`/v2/payments/${encodeURIComponent(reference)}/verify`);
+    const v1 = config.chapa.version === 'v1';
+    const json = await chapaFetch(
+      v1 ? `/v1/transaction/verify/${encodeURIComponent(reference)}` : `/v2/payments/${encodeURIComponent(reference)}/verify`
+    );
     const data = json?.data || json;
     const confirmed = data?.status === 'success';
     if (!confirmed) {
-      logger.warn('payment_not_confirmed', { provider: 'chapa', reference, status: data?.status });
+      logger.warn('payment_not_confirmed', { provider: 'chapa', version: config.chapa.version, reference, status: data?.status });
     }
     return {
       confirmed,
@@ -196,21 +229,42 @@ const chapaProvider = {
    * Chapa plan — see LAUNCH_CHECKLIST.md §Payments. Failures throw
    * loudly rather than pretending the money moved.
    */
-  async _payout({ amount, currency, ref, toPhone, kind }) {
+  async _payout({ amount, currency, ref, toPhone, toName, kind }) {
     if (!toPhone) {
       throw new Error(`Chapa ${kind} requires the recipient phone number — refusing to move money without a destination`);
     }
-    const json = await chapaFetch('/v2/payouts/transfers', {
-      method: 'POST',
-      body: {
-        amount,
-        currency,
-        merchant_reference: `${kind === 'refund' ? 'RFND' : 'RLSE'}-${ref}`,
-        recipient: { type: 'mobile_money', account_number: toPhone },
-      },
-    });
-    const reference = json?.data?.reference || json?.data?.merchant_reference || randRef('CHA');
-    logger.info('payment_payout_initiated', { provider: 'chapa', kind, reference, to: toPhone });
+    const v1 = config.chapa.version === 'v1';
+    let json;
+    if (v1) {
+      // v1 transfers pay into an account by bank_code; mobile money
+      // providers (Telebirr etc.) are listed as banks. Test-mode keys
+      // simulate the outcome via `status` — live keys must omit it.
+      const bankCode = await v1BankId(config.chapa.payoutBankSlug || 'telebirr');
+      json = await chapaFetch('/v1/transfers', {
+        method: 'POST',
+        body: {
+          amount,
+          currency,
+          reference: `${kind === 'refund' ? 'RFND' : 'RLSE'}-${ref}`,
+          account_name: toName || 'Zemen payout',
+          account_number: String(toPhone).replace(/^\+/, ''),
+          bank_code: bankCode,
+          ...(chapaIsTestMode() ? { status: 'success' } : {}),
+        },
+      });
+    } else {
+      json = await chapaFetch('/v2/payouts/transfers', {
+        method: 'POST',
+        body: {
+          amount,
+          currency,
+          merchant_reference: `${kind === 'refund' ? 'RFND' : 'RLSE'}-${ref}`,
+          recipient: { type: 'mobile_money', account_number: toPhone },
+        },
+      });
+    }
+    const reference = json?.data?.reference || json?.data?.merchant_reference || (v1 ? `${kind === 'refund' ? 'RFND' : 'RLSE'}-${ref}` : randRef('CHA'));
+    logger.info('payment_payout_initiated', { provider: 'chapa', version: config.chapa.version, kind, reference, to: toPhone });
     return { status: kind === 'refund' ? 'refunded' : 'released', reference };
   },
 

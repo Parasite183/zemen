@@ -14,6 +14,7 @@ process.env.AFRICASTALKING_API_KEY = 'test-at-key';
 process.env.AFRICASTALKING_USERNAME = 'zemen-test';
 
 const { stubProvider, chapaProvider } = await import('../src/providers/payments.js');
+const { config } = await import('../src/config.js');
 const { africastalkingProvider } = await import('../src/providers/sms.js');
 const { initDb, db } = await import('../src/db.js');
 const { initSchema } = await import('../src/schema.js');
@@ -77,6 +78,83 @@ test('chapa webhook signature verification', () => {
   assert.equal(chapaProvider.verifyWebhook(body, { 'x-chapa-signature': 'deadbeef' }), false, 'tampered body/signature rejected');
   assert.equal(chapaProvider.verifyWebhook(body, {}), false, 'missing signature header rejected');
 });
+
+// ── Chapa v1 (classic platform, CHASECK_... keys, api.chapa.co) ─────
+// The version is read from config at call time, so flipping it here
+// exercises the v1 API surface without re-importing the module.
+
+function withChapaV1(fn) {
+  return async () => {
+    const saved = { version: config.chapa.version, apiUrl: config.chapa.apiUrl };
+    config.chapa.version = 'v1';
+    config.chapa.apiUrl = 'https://api.chapa.co';
+    try {
+      await fn();
+    } finally {
+      config.chapa.version = saved.version;
+      config.chapa.apiUrl = saved.apiUrl;
+    }
+  };
+}
+
+test('chapa v1 deposit uses /v1/transaction/initialize with tx_ref', withChapaV1(async () => {
+  const calls = [];
+  mockFetch(async (url, opts) => {
+    calls.push({ url, opts });
+    return jsonRes({ message: 'Hosted Link', status: 'success', data: { checkout_url: 'https://checkout.chapa.co/checkout/payment/X' } });
+  });
+  try {
+    const d = await chapaProvider.deposit({ amount: 100, currency: 'ETB', ref: 'DEAL-V1' });
+    assert.equal(d.status, 'pending');
+    assert.equal(d.checkoutUrl, 'https://checkout.chapa.co/checkout/payment/X');
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].url.endsWith('/v1/transaction/initialize'), 'v1 initialize endpoint');
+    const body = JSON.parse(calls[0].opts.body);
+    assert.equal(body.tx_ref, 'DEAL-V1', 'v1 identifies the payment by tx_ref');
+    assert.equal(d.reference, 'DEAL-V1', 'v1 reference IS the deal ref (verify is by tx_ref)');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}));
+
+test('chapa v1 confirmPayment verifies by tx_ref (our deal ref)', withChapaV1(async () => {
+  mockFetch(async (url) => {
+    assert.ok(url.endsWith('/v1/transaction/verify/DEAL-V1'), 'v1 verify by tx_ref');
+    return jsonRes({ message: 'Payment details fetched successfully', status: 'success', data: { status: 'success', tx_ref: 'DEAL-V1', amount: 100 } });
+  });
+  try {
+    const c = await chapaProvider.confirmPayment('DEAL-V1');
+    assert.equal(c.confirmed, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}));
+
+test('chapa v1 payout resolves the mobile-money bank id and transfers', withChapaV1(async () => {
+  const calls = [];
+  mockFetch(async (url, opts) => {
+    calls.push({ url, opts });
+    if (url.endsWith('/v1/banks')) {
+      return jsonRes({ status: 'success', data: [{ id: 855, slug: 'telebirr', is_mobilemoney: 1 }] });
+    }
+    if (url.endsWith('/v1/transfers')) {
+      return jsonRes({ status: 'success', data: 'RLSE-DEAL-V1' });
+    }
+    throw new Error('unexpected v1 url ' + url);
+  });
+  try {
+    const r = await chapaProvider.release({ amount: 100, currency: 'ETB', ref: 'DEAL-V1', toPhone: '+251911000001', toName: 'Abebe Kebede' });
+    assert.equal(r.status, 'released');
+    const transfer = calls.find((c) => c.url.endsWith('/v1/transfers'));
+    assert.ok(transfer, 'payout hits v1 transfers');
+    const body = JSON.parse(transfer.opts.body);
+    assert.equal(body.bank_code, 855, 'mobile-money bank id resolved from /v1/banks');
+    assert.equal(body.account_number, '251911000001', 'phone is E.164 without the + for v1');
+    assert.equal(body.account_name, 'Abebe Kebede');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+}));
 
 test('chapa confirmPayment re-verifies server-side', async () => {
   mockFetch(async (url) => {
