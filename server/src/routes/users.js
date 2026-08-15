@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { wrap, ok, badRequest, forbidden, notFound } from '../http.js';
-import { authMiddleware, requireStaff, requireModerator, verifyActionOtp, revokeAllSessions } from '../auth.js';
+import { authMiddleware, requireStaff, requireModerator, verifyActionOtp, revokeAllSessions, isModerator } from '../auth.js';
 import { nowIso, sha256, normalizePhone, genRef } from '../crypto.js';
 import { uploadId, readUploadedBytes, assertUploadContent, deleteUploadedFile } from '../uploads.js';
 import { logger } from '../logger.js';
@@ -267,7 +267,7 @@ router.get('/users/:id', wrap(async (req, res) => {
   if (!u) throw notFound('User not found');
   const reputation = await getReputation(u.id);
   const isSelf = u.id === req.user.id;
-  const isMod = req.user.is_moderator;
+  const isMod = isModerator(req.user);
   ok(res, {
     user: {
       id: u.id,

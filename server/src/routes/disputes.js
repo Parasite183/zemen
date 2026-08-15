@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { wrap, ok, badRequest, notFound, forbidden } from '../http.js';
-import { authMiddleware, requireModerator, requireStaff } from '../auth.js';
+import { authMiddleware, requireModerator, requireStaff, isModerator } from '../auth.js';
 import { uploadEvidence, assertUploadContent } from '../uploads.js';
 import {
   createDispute, getDisputeDetail, addStatement, addEvidence,
@@ -49,7 +49,7 @@ router.get('/:id', wrap(async (req, res) => {
   const d = await getDisputeDetail(Number(req.params.id));
   if (!d) throw notFound('Dispute not found');
   const deal = d.transaction;
-  const allowed = req.user.is_moderator || (deal && (deal.party_a_id === req.user.id || deal.party_b_id === req.user.id));
+  const allowed = isModerator(req.user) || (deal && (deal.party_a_id === req.user.id || deal.party_b_id === req.user.id));
   if (!allowed) throw forbidden('Not allowed to view this dispute');
   ok(res, { dispute: d });
 }));

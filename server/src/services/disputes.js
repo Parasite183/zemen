@@ -14,6 +14,7 @@
 import { db } from '../db.js';
 import { appendLedger } from '../ledger.js';
 import { nowIso } from '../crypto.js';
+import { isModerator } from '../auth.js';
 import { getDeal } from './deals.js';
 import { markDisputed } from './deals.js';
 import paymentsProvider from '../providers/payments.js';
@@ -94,7 +95,7 @@ export async function addStatement(disputeId, user, body) {
   if (d.status === 'resolved') throw conflict('Dispute is already resolved');
   const deal = await getDeal(d.transaction_id);
   const isParty = deal && (deal.party_a_id === user.id || deal.party_b_id === user.id);
-  if (!isParty && !user.is_moderator) throw forbidden('Only parties and moderators can post');
+  if (!isParty && !isModerator(user)) throw forbidden('Only parties and moderators can post');
   if (!body || !body.trim()) throw badRequest('Statement cannot be empty');
   await db.run(`INSERT INTO dispute_statements (dispute_id, user_id, body, created_at) VALUES (?, ?, ?, ?)`,
     [disputeId, user.id, body.trim(), nowIso()]);

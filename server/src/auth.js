@@ -65,8 +65,15 @@ export async function authMiddleware(req, res, next) {
   }
 }
 
+/** True for moderators and anyone above (staff, owner). */
+export function isModerator(user) {
+  return !!(user && (user.is_moderator || user.is_staff || user.is_owner));
+}
+
 export const requireModerator = (req, _res, next) => {
-  if (!req.user?.is_moderator) return next(forbidden('Moderator role required'));
+  // Staff and owners are implicitly moderators (they carry every
+  // moderator power plus more) — no need for a separate flag.
+  if (!isModerator(req.user)) return next(forbidden('Moderator role required'));
   next();
 };
 

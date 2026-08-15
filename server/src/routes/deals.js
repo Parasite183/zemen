@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { wrap, ok, badRequest } from '../http.js';
-import { authMiddleware } from '../auth.js';
+import { authMiddleware, isModerator } from '../auth.js';
 import { entriesForTx, verifyChain } from '../ledger.js';
 import { CREATE_LIMITS } from '../rate-limit.js';
 import {
@@ -25,7 +25,7 @@ router.get('/:id', wrap(async (req, res) => {
   const deal = await dealDetail(Number(req.params.id));
   if (!deal) return ok(res, { deal: null });
   const isParty = deal.party_a_id === req.user.id || deal.party_b_id === req.user.id;
-  if (!isParty && !req.user.is_moderator) return ok(res, { deal: null });
+  if (!isParty && !isModerator(req.user)) return ok(res, { deal: null });
   ok(res, { deal });
 }));
 

@@ -91,7 +91,9 @@ export default function DisputeDetail() {
   if (!dispute) return <Spinner />;
 
   const tx = dispute.transaction;
-  const isMod = !!user.is_moderator;
+  // Staff/owners are implicitly moderators (same rule as the server's
+  // requireModerator) — they see the moderator panel too.
+  const isMod = !!(user.is_moderator || user.is_staff || user.is_owner);
   const isParty = tx && (tx.party_a_id === user.id || tx.party_b_id === user.id);
   const open = dispute.status === 'open';
   const resolution = dispute.resolution;

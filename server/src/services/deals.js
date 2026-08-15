@@ -7,7 +7,7 @@ import { canonicalize, sha256, genRef, nowIso } from '../crypto.js';
 import paymentsProvider from '../providers/payments.js';
 import { badRequest, notFound, forbidden, conflict } from '../http.js';
 import { config } from '../config.js';
-import { verifyActionOtp } from '../auth.js';
+import { verifyActionOtp, isModerator } from '../auth.js';
 import { assertDealEligibility } from './identity.js';
 import { computeReputation } from './reputation.js';
 import { runFraudChecks } from './anti-fraud.js';
@@ -47,7 +47,7 @@ async function loadDealForUser(id, user) {
   const d = await getDeal(id);
   if (!d) throw notFound('Deal not found');
   const isParty = d.party_a_id === user.id || d.party_b_id === user.id;
-  if (!isParty && !user.is_moderator) throw forbidden('Not a party to this deal');
+  if (!isParty && !isModerator(user)) throw forbidden('Not a party to this deal');
   return d;
 }
 

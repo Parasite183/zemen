@@ -149,4 +149,23 @@ test('role overview and search are staff-only and return the expected shape', as
   assert.deepEqual((await empty.json()).users, []);
 });
 
+test('staff and owners can moderate without the is_moderator flag', async () => {
+  // An owner who is NOT flagged is_moderator must still pass every
+  // moderator gate (queues, review, voting) — staff/owner are implicitly
+  // moderators. This is what lets an owner reach the roles UI.
+  const owner = await mkUser({ name: 'OwnerNoModFlag', owner: true, staff: true });
+  const { token } = await issueSession({ id: owner }, 'test', '');
+
+  const review = await get('/api/mod/review', token);
+  assert.equal(review.status, 200, 'owner can read the identity review queue');
+
+  const modqueue = await get('/api/disputes/modqueue', token);
+  assert.equal(modqueue.status, 200, 'owner can read the dispute queue');
+
+  // A plain user is still blocked.
+  const plain = await mkUser({ name: 'Plain3' });
+  const { token: pt } = await issueSession({ id: plain }, 'test', '');
+  assert.equal((await get('/api/mod/review', pt)).status, 403);
+});
+
 test('teardown', () => server?.close());
