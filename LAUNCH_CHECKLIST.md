@@ -36,8 +36,14 @@ env vars to the Worker); non-secret vars live in `wrangler.jsonc` `vars`.
 
 - **Payments — Chapa (Ethiopia).** Create a merchant account at
   [chapa.co](https://chapa.co). Start in **Test mode**; switch to Live only
-  after the sandbox flow passes. Configure the webhook URL
-  `https://<your-domain>/api/payments/webhook` with a strong secret hash.
+  after the sandbox flow passes. Configure the webhook URL to the
+  **API Worker** (the most robust target — no Pages proxy in the path):
+  `https://zemen-api.183georgedaniel.workers.dev/api/payments/webhook`,
+  or the real Pages project domain `https://zemen-7xt.pages.dev/api/payments/webhook`.
+  ⚠️ **Do NOT use `https://zemen.pages.dev/...`** — that domain is a
+  *different* site (an unrelated project that does not proxy `/api/*`);
+  webhook POSTs there get `405 Method Not Allowed` and never reach the
+  Worker. Set a strong secret hash and mirror it in `CHAPA_WEBHOOK_SECRET`.
   Payment flow is **non-custodial**: Zemen never holds funds. `deposit()`
   creates a Chapa **hosted checkout**; the payer completes payment on
   Chapa's page; Chapa's webhook (HMAC-verified, then **re-verified
