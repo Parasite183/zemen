@@ -176,7 +176,6 @@ const INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_tx_status ON transactions(status)',
   'CREATE INDEX IF NOT EXISTS idx_ledger_tx ON ledger(tx_id)',
   'CREATE INDEX IF NOT EXISTS idx_disputes_tx ON disputes(transaction_id)',
-  'CREATE INDEX IF NOT EXISTS idx_disputes_appeal ON disputes(appeal_of)',
   'CREATE INDEX IF NOT EXISTS idx_users_category ON users(category)',
   'CREATE INDEX IF NOT EXISTS idx_docs_user ON id_documents(user_id)',
   'CREATE INDEX IF NOT EXISTS idx_docs_idnum ON id_documents(id_number_hash)',
@@ -246,12 +245,19 @@ async function migrateLedgerContent() {
   }
 }
 
-/** DBs created before dispute appeals existed need the new columns. */
+/**
+ * DBs created before dispute appeals existed need the new columns.
+ * The appeal index lives here (not in INDEXES) so it is created AFTER
+ * the columns exist — putting it in the static index list would make
+ * initSchema throw on any pre-existing disputes table (CREATE INDEX on
+ * a missing column) before the migration ever ran.
+ */
 async function migrateDisputeColumns() {
   if (db.dialect === 'pg') {
     for (const ddl of ['appeal_of INTEGER', 'appealed_at TEXT']) {
       await db.run(`ALTER TABLE disputes ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
+    await db.run('CREATE INDEX IF NOT EXISTS idx_disputes_appeal ON disputes(appeal_of)');
     return;
   }
   const cols = await db.all(`SELECT name FROM pragma_table_info('disputes')`);
@@ -259,4 +265,5 @@ async function migrateDisputeColumns() {
   const add = (name, ddl) => (have.has(name) ? Promise.resolve() : db.run(`ALTER TABLE disputes ADD COLUMN ${ddl}`));
   await add('appeal_of', 'appeal_of INTEGER');
   await add('appealed_at', 'appealed_at TEXT');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_disputes_appeal ON disputes(appeal_of)');
 }

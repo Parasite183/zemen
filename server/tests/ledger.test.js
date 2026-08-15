@@ -29,8 +29,13 @@ test('ledger appends entries and verifies a clean chain', async () => {
 });
 
 test('ledger detects any tampering', async () => {
-  // flip one character of the first entry's stored hash
-  await db.run(`UPDATE ledger SET hash = '0' || substr(hash, 2) WHERE id = 1`);
+  // Flip the first hex char of the first entry's stored hash. The flip
+  // must be conditional: forcing it to '0' is a no-op when the hash
+  // already starts with '0' (~1/16 of hashes), which made this test
+  // flaky — the tamper silently did nothing and verifyChain passed.
+  const row = await db.get('SELECT hash FROM ledger WHERE id = 1');
+  const flipped = (row.hash[0] === '0' ? '1' : '0') + row.hash.slice(1);
+  await db.run('UPDATE ledger SET hash = ? WHERE id = 1', [flipped]);
   const res = await verifyChain();
   assert.equal(res.valid, false);
 });
