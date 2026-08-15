@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ShieldCheck, AlertTriangle, RefreshCw, Network, Fingerprint, Zap, FileText, GitBranch } from 'lucide-react';
-import { api } from '../api.js';
+import { api, useUploadUrl } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
 import { Card, Spinner, Empty, StatusChip, Button, VerifiedBadge } from '../components/ui.jsx';
@@ -23,6 +23,28 @@ const DOC_TYPE = {
   national_id: 'National ID',
   business_license: 'Business license',
 };
+
+// Uploads are access-gated (owner/staff only) — a raw <img src> can't
+// send the auth header and 401s. Fetch the file with the token and show
+// it as a blob URL instead. PDFs get a link, images a thumbnail.
+function DocThumb({ path, name }) {
+  const url = useUploadUrl(path);
+  if (!path) return null;
+  const isPdf = /pdf$/i.test(path);
+  if (!url) return <div className="mt-2 h-24 w-32 animate-pulse rounded-lg bg-paper" />;
+  if (isPdf) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/40">
+        <FileText size={13} /> Open PDF
+      </a>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="mt-2 block">
+      <img src={url} alt={`${name} document`} className="max-h-36 rounded-lg border border-line bg-paper object-contain" />
+    </a>
+  );
+}
 
 // Clickable chips for the accounts that make up a cluster.
 function MemberChips({ members }) {
@@ -134,9 +156,7 @@ export default function Moderator() {
                   {d.doc_created_at && <span>· {timeAgo(d.doc_created_at)}</span>}
                 </div>
                 {d.doc_path ? (
-                  <a href={d.doc_path} target="_blank" rel="noreferrer" className="mt-2 block">
-                    <img src={d.doc_path} alt={`${d.name} document`} className="max-h-36 rounded-lg border border-line bg-paper object-contain" />
-                  </a>
+                  <DocThumb path={d.doc_path} name={d.name} />
                 ) : (
                   <p className="mt-2 rounded-lg bg-paper px-3 py-2 text-[11px] text-ink-soft">{t('mod.noImage')}</p>
                 )}

@@ -1,11 +1,25 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
 import { Paperclip, Send, Scale, UserCheck } from 'lucide-react';
-import { api } from '../api.js';
+import { api, useUploadUrl } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
 import { Card, Button, StatusChip, Spinner, Empty, ErrorBox, Avatar, Chip } from '../components/ui.jsx';
 import { money, shortDate, cx } from '../lib.js';
+
+// Evidence files are access-gated (parties/moderators only) — a plain
+// <a href> can't send the auth header and 401s. Fetch with the token
+// and link to a blob URL. file_path already starts with /uploads.
+function EvidenceLink({ evidence }) {
+  const url = useUploadUrl(evidence.file_path);
+  if (!url) return <div className="h-9 animate-pulse rounded-xl bg-paper" />;
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="flex items-center justify-between rounded-xl bg-paper px-4 py-2.5 text-sm hover:bg-brand-soft/40">
+      <span className="truncate font-medium">{evidence.file_name}</span>
+      <span className="ml-3 shrink-0 text-xs text-ink-soft">{shortDate(evidence.created_at)}</span>
+    </a>
+  );
+}
 
 export default function DisputeDetail() {
   const { id } = useParams();
@@ -150,10 +164,7 @@ export default function DisputeDetail() {
         <div className="space-y-2">
           {dispute.evidence.length === 0 && <p className="text-sm text-ink-soft">—</p>}
           {dispute.evidence.map((e) => (
-            <a key={e.id} href={`/${e.file_path.replaceAll('\\', '/')}`} target="_blank" rel="noreferrer" className="flex items-center justify-between rounded-xl bg-paper px-4 py-2.5 text-sm hover:bg-brand-soft/40">
-              <span className="truncate font-medium">{e.file_name}</span>
-              <span className="ml-3 shrink-0 text-xs text-ink-soft">{shortDate(e.created_at)}</span>
-            </a>
+            <EvidenceLink key={e.id} evidence={e} />
           ))}
         </div>
         {isParty && open && (
