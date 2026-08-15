@@ -2,15 +2,17 @@ import { Router } from 'express';
 import { wrap, ok, badRequest } from '../http.js';
 import { authMiddleware } from '../auth.js';
 import { entriesForTx, verifyChain } from '../ledger.js';
+import { CREATE_LIMITS } from '../rate-limit.js';
 import {
   createDeal, dealDetail, respondToDeal, cancelDeal, fundEscrow,
-  startDeal, deliverDeal, confirmDeal, listDealsForUser,
+  startDeal, deliverDeal, confirmDeal, checkEscrowStatus, listDealsForUser,
 } from '../services/deals.js';
 
 const router = Router();
 router.use(authMiddleware);
 
-router.post('/', wrap(async (req, res) => {
+// Spam protection: deal creation is rate-limited per account and per IP.
+router.post('/', ...CREATE_LIMITS.deals, wrap(async (req, res) => {
   const deal = await createDeal(req.user, req.body);
   ok(res, { deal }, 201);
 }));
@@ -37,6 +39,12 @@ router.post('/:id/cancel', wrap(async (req, res) => {
 
 router.post('/:id/escrow/deposit', wrap(async (req, res) => {
   ok(res, { deal: await fundEscrow(Number(req.params.id), req.user, req.body?.otp) });
+}));
+
+// Poll the provider for a pending hosted-checkout payment (webhook
+// fallback). Idempotent; flips escrow_state to 'funded' on confirmation.
+router.post('/:id/escrow/check', wrap(async (req, res) => {
+  ok(res, { deal: await checkEscrowStatus(Number(req.params.id), req.user) });
 }));
 
 router.post('/:id/start', wrap(async (req, res) => {

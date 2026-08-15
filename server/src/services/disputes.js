@@ -20,6 +20,7 @@ import paymentsProvider from '../providers/payments.js';
 import smsProvider from '../providers/sms.js';
 import { computeReputation } from './reputation.js';
 import { runFraudChecks, clusterGroups } from './anti-fraud.js';
+import { logger } from '../logger.js';
 import { badRequest, notFound, forbidden, conflict } from '../http.js';
 
 // High-value disputes must be decided by a panel of at least this many
@@ -126,13 +127,19 @@ export async function moderatorQueue() {
   );
 }
 
-/** Permanent audit trail of moderator actions blocked by the guards. */
+/**
+ * Permanent audit trail of moderator actions blocked by the guards.
+ * Also emits a structured moderator_blocked log line so blocked
+ * attempts surface as alerts (LAUNCH_CHECKLIST.md §Monitoring) — the
+ * DB row is the record, the log line is the alarm.
+ */
 async function logBlockedAttempt(disputeId, moderatorId, reason) {
   await db.run(
     `INSERT INTO dispute_moderator_log (dispute_id, moderator_id, reason, created_at)
      VALUES (?, ?, ?, ?)`,
     [disputeId, moderatorId, reason, nowIso()]
   );
+  logger.warn('moderator_blocked', { disputeId, moderatorId, reason });
 }
 
 /**
@@ -507,9 +514,12 @@ async function applyResolution(disputeId, verdict, by) {
     }
 
     if (deal.escrow_enabled && deal.escrow_state === 'funded') {
+      // Non-custodial payout: the winner's mobile-money wallet receives
+      // the escrowed funds via the provider (state recorded, not held).
+      const winner = await db.get('SELECT phone FROM users WHERE id = ?', [winnerId]);
       const call = resolution === 'confirmed'
-        ? () => paymentsProvider.release({ amount: deal.amount, currency: deal.currency, ref: deal.ref })
-        : () => paymentsProvider.refund({ amount: deal.amount, currency: deal.currency, ref: deal.ref });
+        ? () => paymentsProvider.release({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone })
+        : () => paymentsProvider.refund({ amount: deal.amount, currency: deal.currency, ref: deal.ref, toPhone: winner?.phone });
       const result = await call();
       await db.run(`UPDATE transactions SET escrow_state = ?, escrow_ref = ? WHERE id = ?`,
         [result.status, result.reference, deal.id]);

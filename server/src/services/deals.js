@@ -148,7 +148,12 @@ export async function cancelDeal(id, user) {
   return dealDetail(id);
 }
 
-// ── escrow (stub mobile-money provider) ─────────────────────────────
+// ── escrow (non-custodial provider) ─────────────────────────────────
+// Zemen never holds funds. With a hosted-checkout provider (chapa),
+// deposit() returns 'pending' + a checkout_url: the payer completes the
+// payment on the provider's page, and the provider's webhook (re-
+// verified server-side) flips escrow_state to 'funded'. The stub
+// provider returns 'funded' immediately for local dev/tests.
 export async function fundEscrow(id, user, otp) {
   const d = await loadDealForUser(id, user);
   if (!d.escrow_enabled) throw badRequest('This deal has no escrow');
@@ -161,16 +166,52 @@ export async function fundEscrow(id, user, otp) {
     throw badRequest('Enter the one-time code we sent you to fund escrow', 'otp_required');
   }
 
+  // A pending checkout already exists → hand back the same payment page
+  // instead of creating a new one.
+  if (d.escrow_state === 'pending' && d.escrow_checkout_url) {
+    return dealDetail(id);
+  }
+
   const result = await paymentsProvider.deposit({ amount: d.amount, currency: d.currency, ref: d.ref });
   const { rowCount } = await db.run(
-    `UPDATE transactions SET escrow_state = ?, escrow_ref = ? WHERE id = ? AND escrow_state = 'none'`,
-    [result.status, result.reference, id]
+    `UPDATE transactions SET escrow_state = ?, escrow_ref = ?, escrow_checkout_url = ? WHERE id = ? AND escrow_state = 'none'`,
+    [result.status, result.reference, result.checkoutUrl || '', id]
   );
   if (!rowCount) throw conflict('Escrow already funded');
-  await appendLedger('escrow_funded', {
+  // The ledger reflects the real, non-custodial shape: 'pending' is
+  // recorded as escrow_initiated; escrow_funded is appended only when
+  // the provider CONFIRMS the payment (webhook or escrow/check).
+  await appendLedger(result.status === 'pending' ? 'escrow_initiated' : 'escrow_funded', {
     txId: id, userId: user.id,
     payload: { amount: d.amount, currency: d.currency, provider: result.reference, providerName: paymentsProvider.name },
   });
+  return dealDetail(id);
+}
+
+/**
+ * Poll path for hosted-checkout escrow: ask the provider whether the
+ * pending payment completed, and record the provider-confirmed state.
+ * This is the fallback when a webhook was delayed/lost — webhook and
+ * poll are idempotent and both re-verify server-side.
+ */
+export async function checkEscrowStatus(id, user) {
+  const d = await loadDealForUser(id, user);
+  if (!d.escrow_enabled) throw badRequest('This deal has no escrow');
+  if (d.escrow_state !== 'pending') return dealDetail(id); // nothing to confirm
+
+  const providerRef = d.escrow_ref || d.ref;
+  const confirmed = await paymentsProvider.confirmPayment(providerRef);
+  if (confirmed.confirmed) {
+    const { rowCount } = await db.run(
+      `UPDATE transactions SET escrow_state = 'funded' WHERE id = ? AND escrow_state = 'pending'`, [id]
+    );
+    if (rowCount) {
+      await appendLedger('escrow_funded', {
+        txId: id, userId: user.id,
+        payload: { amount: d.amount, currency: d.currency, provider: confirmed.txRef || providerRef, providerName: paymentsProvider.name },
+      });
+    }
+  }
   return dealDetail(id);
 }
 
@@ -221,7 +262,12 @@ export async function confirmDeal(id, user, otp) {
     if (!rowCount) throw conflict('Deal must be delivered before confirming');
 
     if (d.escrow_enabled && d.escrow_state === 'funded') {
-      const result = await paymentsProvider.release({ amount: d.amount, currency: d.currency, ref: d.ref });
+      // Non-custodial release: payout the escrowed funds to the
+      // deliverer's mobile-money wallet (provider confirms the state).
+      const deliverer = await db.get('SELECT phone FROM users WHERE id = ?', [d.delivered_by]);
+      const result = await paymentsProvider.release({
+        amount: d.amount, currency: d.currency, ref: d.ref, toPhone: deliverer?.phone,
+      });
       const { rowCount: released } = await db.run(
         `UPDATE transactions SET escrow_state = ?, escrow_ref = ? WHERE id = ? AND escrow_state = 'funded'`,
         [result.status, result.reference, id]

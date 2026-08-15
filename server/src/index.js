@@ -1,9 +1,20 @@
 import { initDb, db } from './db.js';
 import { initSchema } from './schema.js';
 import { buildApp } from './app.js';
-import { config } from './config.js';
+import { config, assertValidConfig } from './config.js';
+import { logger } from './logger.js';
 
 async function main() {
+  // Fail loudly before touching the DB: a half-configured production
+  // boot is worse than no boot at all (see config.js validateConfig).
+  try {
+    assertValidConfig();
+  } catch (err) {
+    logger.error('config_invalid', { problems: err.configProblems });
+    console.error('\n' + err.message);
+    process.exit(1);
+  }
+
   await initDb();
   await initSchema();
 

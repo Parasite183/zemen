@@ -1,18 +1,20 @@
 import { Router } from 'express';
 import { db } from '../db.js';
-import { wrap, ok, notFound, forbidden } from '../http.js';
+import { wrap, ok, badRequest, notFound, forbidden } from '../http.js';
 import { authMiddleware, requireModerator, requireStaff } from '../auth.js';
-import { uploadEvidence } from '../uploads.js';
+import { uploadEvidence, assertUploadContent } from '../uploads.js';
 import {
   createDispute, getDisputeDetail, addStatement, addEvidence,
   moderatorQueue, castVote, staffPropose, staffConfirm, requestAppeal,
   moderatorStats, staffStats,
 } from '../services/disputes.js';
+import { CREATE_LIMITS } from '../rate-limit.js';
 
 const router = Router();
 router.use(authMiddleware);
 
-router.post('/', wrap(async (req, res) => {
+// Spam protection: dispute creation is rate-limited per account and per IP.
+router.post('/', ...CREATE_LIMITS.disputes, wrap(async (req, res) => {
   const { transaction_id: txId, reason } = req.body;
   if (!txId) return ok(res, { error: 'transaction_id required' }, 400);
   const dispute = await createDispute({ transactionId: Number(txId), raisedBy: req.user.id, reason });
@@ -58,6 +60,9 @@ router.post('/:id/statements', wrap(async (req, res) => {
 
 router.post('/:id/evidence', uploadEvidence, wrap(async (req, res) => {
   if (!req.file) return ok(res, { error: 'file required' }, 400);
+  // Magic-byte check: evidence must be a real image/PDF, not something
+  // masquerading as one (uploads.js assertUploadContent).
+  await assertUploadContent(req.file, { badRequest });
   ok(res, { dispute: await addEvidence(Number(req.params.id), req.user, req.file) });
 }));
 

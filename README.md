@@ -63,8 +63,13 @@ and what is mocked:
 | Disputes + moderator votes | ✅ Implemented | Statements, evidence upload, votes, staff resolve, outcome applied to the deal + escrow. Hardened: conflict-of-interest guard (prior dealings / device-IP cluster), 3-vote quorum above 2,000 ETB, one appeal per dispute on a fresh panel, per-moderator track record, blocked attempts logged. |
 | Directory & public profiles | ✅ Implemented | Searchable, phone masked on public pages, shareable trust report at `/r/<token>`. |
 | i18n (EN + AM) | ✅ Implemented | Amharic is a starter translation — extend `web/src/i18n/am.js`. |
-| SMS / OTP delivery | 🟡 **Real w/ fallback** | `server/src/providers/sms.js` calls Twilio or Africa's Talking when `SMS_PROVIDER` + credentials are set (number validation included), otherwise logs to the console. |
-| Mobile-money escrow | 🟡 **Stub** | `server/src/providers/payments.js` fakes deposit/release/refund; swap in Telebirr / M-Pesa / Chapa-style flow. |
+| SMS / OTP delivery | 🟢 **Real (gated)** | `server/src/providers/sms.js` sends via Africa's Talking or Twilio; per-recipient delivery status is parsed (non-delivery → loud error), transient failures retry with backoff, and `SMS_PROVIDER=console` (dev stub) is **refused at boot in production**. |
+| Mobile-money escrow | 🟢 **Real (non-custodial)** | `server/src/providers/payments.js` integrates **Chapa hosted checkout + HMAC webhooks** — Zemen never holds funds, it records provider-confirmed state (escrow `pending → funded` on webhook, then releases/refunds via Chapa payouts). Stub provider exists for dev/tests and is **refused at boot in production**. |
+| Secrets & env validation | ✅ Implemented | Production refuses to boot with a missing/invalid `JWT_SECRET`, stub providers, or missing provider keys — `config.js validateConfig()` lists exactly what's missing. |
+| Abuse protection | ✅ Implemented | Rate limits on OTP request/verify (per IP + per phone) and deal/dispute creation (per account + per IP); 429 + `Retry-After`; JSON bodies capped at 256 KB. |
+| Upload security | ✅ Implemented | Image/PDF allowlist, 10 MB cap, magic-byte content checks, access-gated serving (owner/staff/parties only). |
+| Account deletion | ✅ Implemented | `POST /api/me/delete` (action-OTP) deletes ID documents + anonymises the account; ledger stays immutable. |
+| Structured logging | ✅ Implemented | JSON-per-line logger; auth failures, blocked moderator attempts, payment/SMS provider errors stream as alertable events. |
 | ID verification / KYC | 🟡 **Partial** | Documents uploaded with ID number + doc type, deduped by pHash / ID number, stored for **manual staff review**; no automated KYC. |
 | Ledger anchoring | 🟡 **Partial** | Chain lives in Postgres/SQLite/D1; swap the backing store in `server/src/ledger.js` to anchor externally. |
 | Email / notifications | ❌ Not implemented | Only SMS delivery (real or console stub) exists. |
@@ -145,9 +150,14 @@ Then open **http://localhost:5173**.
 | `JWT_SECRET` | dev default | **Change in production.** Signs session tokens |
 | `DEV_MODE` | `true` | Enables the dev OTP-peek endpoint & autofill helper. **Auto-disabled in `NODE_ENV=production`** |
 | `DEFAULT_CURRENCY` | `ETB` | Default deal currency |
-| `SMS_PROVIDER` | `console` | `twilio` or `africastalking` switches to a real gateway |
+| `SMS_PROVIDER` | `console` | `twilio` or `africastalking` switches to a real gateway; `console` is **refused in production** |
 | `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM` | *(empty)* | Twilio credentials (also enables Lookup line-type check when `TWILIO_LOOKUP_SID` is set) |
 | `AFRICASTALKING_USERNAME` / `AFRICASTALKING_API_KEY` / `AFRICASTALKING_FROM` | *(empty)* | Africa's Talking credentials |
+| `PAYMENT_PROVIDER` | `stub` | `chapa` switches to the real hosted-checkout provider; `stub` is **refused in production** |
+| `CHAPA_SECRET_KEY` / `CHAPA_WEBHOOK_SECRET` / `CHAPA_API_URL` | *(empty)* | Chapa server key + webhook secret hash (required with `PAYMENT_PROVIDER=chapa`) |
+
+> 🚀 **Going live?** See **[LAUNCH_CHECKLIST.md](LAUNCH_CHECKLIST.md)** — env vars, provider accounts,
+> moderator/staff vetting, retention & deletion, backups, monitoring, HTTPS, and the escrow regulatory note.
 
 ## Storage: SQLite ↔ PostgreSQL
 
@@ -216,19 +226,22 @@ hash to a public chain or a set of independent notaries). Nothing else in the co
 
 ### Swapping the stubs
 
-- **SMS/OTP** (`server/src/providers/sms.js`): set `SMS_PROVIDER=twilio` or `SMS_PROVIDER=africastalking` with the
-  matching credentials from `.env`. Each provider performs basic number validation — Twilio Lookup's
-  line-type check (rejects VOIP/virtual numbers) is wired in when `TWILIO_LOOKUP_SID` is set, and Africa's
-  Talking rejects short/obviously-invalid numbers via its API. **Note:** this raises the cost of sybil accounts
-  but doesn't eliminate them — VOIP detection is not perfect, so the anti-fraud layer still applies.
-  Without credentials it logs to the console (dev default).
-- **Mobile money escrow** (`server/src/providers/payments.js`): implement `deposit()` / `release()` / `refund()`
-  against a real provider (Telebirr / M-Pesa / Chapa-style flow). Deal and dispute services are unchanged.
+- **SMS/OTP** (`server/src/providers/sms.js`): set `SMS_PROVIDER=africastalking` (or `twilio`) with the matching
+  credentials from `.env`; `console` is the dev stub and is refused in production. Delivery status is parsed
+  per recipient (non-101 → loud error), failures retry with backoff, and the operator can enable the provider's
+  delivery-report webhook. **Note:** real SMS raises the cost of sybil accounts but doesn't eliminate them —
+  VOIP detection is not perfect, so the anti-fraud layer still applies.
+- **Mobile money escrow** (`server/src/providers/payments.js`): **Chapa** is wired end-to-end (hosted checkout,
+  HMAC-signed webhooks, server-side re-verify, payouts). Zemen never holds funds — it records provider-confirmed
+  state. Deal and dispute services are unchanged apart from plumbing the payout recipient phone.
 - **ID verification**: documents are uploaded and stored for **manual review** (staff flips the status via the
   API). The provider-style seam for a real government ID API or biometric check is `server/src/services/identity.js`
   — swap the `verifyDocument` logic there without touching the deal/reputation/ledger code.
 - **Government ID API / biometrics**: `server/src/services/identity.js` is the single seam; a real registry lookup
   can slot in later without changing routes, deals, reputation, or the ledger.
+- **Telebirr / M-Pesa**: Chapa's hosted checkout already lets payers use Telebirr/CBE Birr. A direct Telebirr or
+  M-Pesa Daraja integration would be a new provider implementing the same `paymentsProvider` interface
+  (`deposit` / `release` / `refund` / `verifyWebhook` / `confirmPayment`) — see LAUNCH_CHECKLIST.md §Payments.
 
 ## Known limitations
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ShieldCheck, Lock, LockOpen, Scale, Hash, CheckCircle2, ChevronDown, ChevronUp, Banknote, KeyRound } from 'lucide-react';
+import { ShieldCheck, Lock, LockOpen, Scale, Hash, CheckCircle2, ChevronDown, ChevronUp, Banknote, KeyRound, Clock, RefreshCw } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
@@ -45,6 +45,11 @@ export default function DealDetail() {
       setDeal(deal);
       if (action === 'respond') await api(`/api/deals/${id}/ledger`).then(({ entries, chain }) => setLedger({ entries, chain })).catch(() => {});
       if (action === 'confirm') load();
+      // Non-custodial escrow: funding created a hosted checkout — open
+      // the provider's payment page so the payer can complete it.
+      if (action === 'escrow/deposit' && deal.escrow_state === 'pending' && deal.escrow_checkout_url) {
+        window.open(deal.escrow_checkout_url, '_blank', 'noopener');
+      }
       setOtpFor(null);
     } catch (e) {
       if (e.code === 'otp_required') {
@@ -98,6 +103,9 @@ export default function DealDetail() {
 
   const escrowMeta = {
     none: { label: t('deal.escrowState.none'), color: 'text-ink-soft', icon: null },
+    // Non-custodial escrow: the payer completes payment on the
+    // provider's hosted page; we record the provider-confirmed state.
+    pending: { label: t('deal.escrowState.pending'), color: 'text-brand', icon: <Clock size={15} /> },
     funded: { label: t('deal.escrowState.funded'), color: 'text-warn', icon: <Lock size={15} /> },
     released: { label: t('deal.escrowState.released'), color: 'text-ok', icon: <LockOpen size={15} /> },
     refunded: { label: t('deal.escrowState.refunded'), color: 'text-ink-soft', icon: <LockOpen size={15} /> },
@@ -215,11 +223,24 @@ export default function DealDetail() {
           <p className="mt-1 text-xs text-ink-soft">
             {t('deal.escrowHint')} {deal.escrow_ref && <span className="mt-2 block">{t('deal.escrowRef')}: <code className="rounded bg-paper px-1.5 py-0.5">{deal.escrow_ref}</code></span>}
           </p>
-          {acts.deposit && (
+          {deal.escrow_state === 'pending' && deal.escrow_checkout_url ? (
+            <>
+              <p className="mt-2 rounded-lg bg-paper px-3 py-2 text-xs text-ink-soft">{t('deal.pendingHint')}</p>
+              <a
+                className="mt-3 block w-full rounded-xl bg-brand px-4 py-2.5 text-center text-sm font-bold text-white hover:bg-brand-dark"
+                href={deal.escrow_checkout_url} target="_blank" rel="noopener noreferrer"
+              >
+                {t('deal.payNow')}
+              </a>
+              <Button className="mt-2" variant="secondary" block onClick={() => act('escrow/check')} disabled={busy === 'escrow/check'}>
+                <RefreshCw size={14} /> {t('deal.checkPayment')}
+              </Button>
+            </>
+          ) : acts.deposit ? (
             <Button className="mt-3" block onClick={() => act('escrow/deposit')} disabled={busy === 'escrow/deposit'}>
               <Lock size={15} /> {t('deal.deposit', { amount: money(deal.amount, deal.currency) })}
             </Button>
-          )}
+          ) : null}
         </Card>
       )}
 

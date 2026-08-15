@@ -22,7 +22,8 @@ const TABLES = (idCol) => [
     is_moderator INTEGER DEFAULT 0,
     is_staff INTEGER DEFAULT 0,
     report_token TEXT UNIQUE,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    deleted_at TEXT                             -- set when the account is deleted/anonymised
   )`,
 
   // Identity documents, one row per upload. Duplicate detection compares
@@ -75,8 +76,9 @@ const TABLES = (idCol) => [
     party_b_id INTEGER NOT NULL,
     status TEXT DEFAULT 'pending',                -- pending|agreed|in_progress|delivered|confirmed|disputed|failed
     escrow_enabled INTEGER DEFAULT 0,
-    escrow_state TEXT DEFAULT 'none',             -- none|funded|released|refunded
+    escrow_state TEXT DEFAULT 'none',             -- none|pending|funded|released|refunded
     escrow_ref TEXT DEFAULT '',
+    escrow_checkout_url TEXT DEFAULT '',          -- hosted-checkout redirect (non-custodial provider)
     terms_hash TEXT DEFAULT '',
     terms_json TEXT DEFAULT '',
     created_at TEXT NOT NULL,
@@ -217,6 +219,34 @@ export async function initSchema() {
   await migrateLedgerContent();
   await migrateIdentityColumns();
   await migrateDisputeColumns();
+  await migrateDeletionColumn();
+  await migrateEscrowColumns();
+}
+
+/** DBs created before account deletion existed need users.deleted_at. */
+async function migrateDeletionColumn() {
+  const ddl = 'deleted_at TEXT';
+  if (db.dialect === 'pg') {
+    await db.run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${ddl}`);
+    return;
+  }
+  const cols = await db.all(`SELECT name FROM pragma_table_info('users')`);
+  if (!cols.some((c) => c.name === 'deleted_at')) {
+    await db.run(`ALTER TABLE users ADD COLUMN ${ddl}`);
+  }
+}
+
+/** DBs created before the hosted-checkout column existed need it added. */
+async function migrateEscrowColumns() {
+  const ddl = "escrow_checkout_url TEXT DEFAULT ''";
+  if (db.dialect === 'pg') {
+    await db.run(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS ${ddl}`);
+    return;
+  }
+  const cols = await db.all(`SELECT name FROM pragma_table_info('transactions')`);
+  if (!cols.some((c) => c.name === 'escrow_checkout_url')) {
+    await db.run(`ALTER TABLE transactions ADD COLUMN ${ddl}`);
+  }
 }
 
 /**

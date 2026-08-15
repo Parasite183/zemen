@@ -50,6 +50,7 @@ export const STATUS = {
 
 export const ESCROW = {
   none:     'deal.escrowState.none',
+  pending:  'deal.escrowState.pending',
   funded:   'deal.escrowState.funded',
   released: 'deal.escrowState.released',
   refunded: 'deal.escrowState.refunded',
@@ -68,7 +69,9 @@ export function dealActions(deal, meId) {
   if (deal.status === 'pending' && !isPartyB) acts.cancel = true;
   if (deal.status === 'agreed') {
     acts.start = true;
-    if (deal.escrow_enabled && deal.escrow_state !== 'funded' && me === 'party_a') acts.deposit = true;
+    // deposit starts a hosted checkout; a 'pending' checkout is shown
+    // as a payment link + status check instead of a new deposit
+    if (deal.escrow_enabled && deal.escrow_state === 'none' && me === 'party_a') acts.deposit = true;
     acts.dispute = true;
     acts.cancel = me === 'party_a';
   }

@@ -6,6 +6,8 @@ import { genOtp, normalizePhone, genRef, nowIso } from '../crypto.js';
 import { ipPrefix } from '../services/identity.js';
 import smsProvider from '../providers/sms.js';
 import { config } from '../config.js';
+import { logger } from '../logger.js';
+import { AUTH_LIMITS } from '../rate-limit.js';
 
 const router = Router();
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -28,7 +30,9 @@ export function publicUser(u) {
 // through the swappable SMS provider. When the provider can validate the
 // line, VoIP/virtual numbers are rejected up front (anti-sybil: they are
 // the cheapest way to fabricate many accounts).
-router.post('/request-otp', wrap(async (req, res) => {
+// Brute-force OTP protection: rate-limited per IP and per phone number
+// (in-memory window — see rate-limit.js for the Workers caveat).
+router.post('/request-otp', AUTH_LIMITS.requestOtpIp, AUTH_LIMITS.requestOtpPhone, wrap(async (req, res) => {
   const phone = normalizePhone(req.body?.phone);
   if (!phone) throw badRequest('Enter a valid phone number', 'phone_invalid');
 
@@ -48,7 +52,7 @@ router.post('/request-otp', wrap(async (req, res) => {
 }));
 
 // Step 2: verify the code → create or load the user, issue a token.
-router.post('/verify-otp', wrap(async (req, res) => {
+router.post('/verify-otp', AUTH_LIMITS.verifyOtpIp, AUTH_LIMITS.verifyOtpPhone, wrap(async (req, res) => {
   const phone = normalizePhone(req.body?.phone);
   const code = String(req.body?.code || '').trim();
   if (!phone || !code) throw badRequest('Phone and code required', 'missing_fields');
@@ -57,11 +61,18 @@ router.post('/verify-otp', wrap(async (req, res) => {
     "SELECT * FROM otp_codes WHERE phone = ? AND purpose = 'login' AND used = 0 ORDER BY id DESC LIMIT 1",
     [phone]
   );
-  if (!latest) throw unauthorized('Invalid or expired code');
-  if (Date.parse(latest.expires_at) < Date.now()) throw unauthorized('Code expired — request a new one');
+  if (!latest) {
+    logger.warn('auth_failed', { reason: 'no_code', phone, ip: clientIp(req) });
+    throw unauthorized('Invalid or expired code');
+  }
+  if (Date.parse(latest.expires_at) < Date.now()) {
+    logger.warn('auth_failed', { reason: 'expired', phone, ip: clientIp(req) });
+    throw unauthorized('Code expired — request a new one');
+  }
   if (latest.code !== code) {
     // Brute-force guard: burn the code after a handful of wrong guesses.
     const attempts = latest.attempts + 1;
+    logger.warn('auth_failed', { reason: 'wrong_code', phone, attempt: attempts, ip: clientIp(req) });
     if (attempts >= OTP_MAX_ATTEMPTS) {
       await db.run('UPDATE otp_codes SET used = 1 WHERE id = ?', [latest.id]);
       throw unauthorized('Too many attempts — request a new code');
@@ -112,7 +123,7 @@ router.post('/sessions/revoke-all', authMiddleware, wrap(async (req, res) => {
 
 // Send a one-time code to the CURRENT phone for a high-stakes action
 // (funding escrow, confirming a large deal, changing the phone number).
-router.post('/action-otp', authMiddleware, wrap(async (req, res) => {
+router.post('/action-otp', authMiddleware, AUTH_LIMITS.actionOtpUser, wrap(async (req, res) => {
   await requestActionOtp(req.user);
   ok(res, { sent: true, expiresIn: 600 });
 }));

@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { wrap, ok, badRequest, forbidden, notFound } from '../http.js';
-import { authMiddleware, requireStaff, requireModerator, verifyActionOtp } from '../auth.js';
-import { nowIso, sha256, normalizePhone } from '../crypto.js';
-import { uploadId, readUploadedBytes } from '../uploads.js';
+import { authMiddleware, requireStaff, requireModerator, verifyActionOtp, revokeAllSessions } from '../auth.js';
+import { nowIso, sha256, normalizePhone, genRef } from '../crypto.js';
+import { uploadId, readUploadedBytes, assertUploadContent, deleteUploadedFile } from '../uploads.js';
+import { logger } from '../logger.js';
 import { normalizeIdNumber, registerIdDocument } from '../services/identity.js';
 import { runFraudChecks, fraudClustersForReview } from '../services/anti-fraud.js';
 import { computeReputation, getReputation } from '../services/reputation.js';
@@ -39,6 +40,9 @@ router.patch('/me', wrap(async (req, res) => {
 // — never silently accepted.
 router.post('/me/id-document', uploadId, wrap(async (req, res) => {
   if (!req.file) throw badRequest('Attach an ID document (photo/scan)', 'file_required');
+  // Magic-byte check: the file's real content must match its claimed
+  // type, and only image/PDF are allowed (uploads.js assertUploadContent).
+  await assertUploadContent(req.file, { badRequest });
   const docType = ['national_id', 'business_license'].includes(req.body?.docType) ? req.body.docType : 'national_id';
   const idNumber = String(req.body?.idNumber || '');
   const phash = String(req.body?.phash || '');
@@ -85,6 +89,42 @@ router.post('/me/phone', wrap(async (req, res) => {
   if (clash) throw badRequest('That phone number is already registered', 'phone_taken');
   await db.run('UPDATE users SET phone = ? WHERE id = ?', [phone, req.user.id]);
   ok(res, { user: await db.get('SELECT * FROM users WHERE id = ?', [req.user.id]) });
+}));
+
+// ── account deletion (data protection: right to erasure) ─────────────
+// Deletes the user's ID documents (the sensitive PII) and anonymises
+// the account row. Ledger/transaction/dispute rows are immutable by
+// design (the ledger's integrity depends on it) and are NOT deleted —
+// they keep referencing the anonymised row, which strips the PII
+// linkage. See LAUNCH_CHECKLIST.md §Data retention & deletion.
+router.post('/me/delete', wrap(async (req, res) => {
+  const okOtp = await verifyActionOtp(req.user, req.body?.otp);
+  if (!okOtp) throw badRequest('Enter the code we sent to your phone to delete your account', 'otp_required');
+
+  // 1. Delete uploaded ID documents (the sensitive personal data).
+  const docs = await db.all('SELECT file_path FROM id_documents WHERE user_id = ?', [req.user.id]);
+  for (const d of docs) await deleteUploadedFile(d.file_path).catch(() => {});
+  await db.run('DELETE FROM id_documents WHERE user_id = ?', [req.user.id]);
+
+  // 2. Anonymise the account row; drop any privileges it carried.
+  await db.run(
+    `UPDATE users SET
+       phone = ?, name = 'Deleted user', category = '', bio = '',
+       id_verification_status = 'none', id_doc_path = '',
+       device_fingerprint = '', signup_ip = '', last_ip = '',
+       id_number_hash = '', id_phash = '', id_flag_reason = '',
+       verified_at = NULL, is_moderator = 0, is_staff = 0,
+       report_token = ?, deleted_at = ?
+     WHERE id = ?`,
+    [`deleted:${req.user.id}`, genRef('RP'), nowIso(), req.user.id]
+  );
+
+  // 3. Revoke every session and purge OTP records for the number.
+  await revokeAllSessions(req.user.id);
+  await db.run('DELETE FROM otp_codes WHERE phone = ?', [req.user.phone]);
+
+  logger.info('account_deleted', { userId: req.user.id });
+  ok(res, { deleted: true });
 }));
 
 // Moderators: re-run the graph/velocity/cluster fraud checks on demand.
