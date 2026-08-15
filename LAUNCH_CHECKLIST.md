@@ -92,17 +92,18 @@ deliberate, human decision. Recommended process:
    (no recent deals with platform users, no shared devices/IPs). The
    independence guards in the dispute engine will block conflicted votes
    automatically, but vetting first is cheaper than cleaning up after.
-2. **Set the flag.** Today this is a direct database update performed by an
-   operator:
-   ```sql
-   UPDATE users SET is_moderator = 1 WHERE id = <user_id>;
-   -- staff (can also resolve overrides + review identity docs):
-   UPDATE users SET is_staff = 1 WHERE id = <user_id>;
-   ```
-   On Cloudflare D1: `wrangler d1 execute zemen-db --remote --command "<sql>"`.
-   > **Follow-up:** an admin UI for this (staff-only endpoint) is a
-   > recommended post-launch feature — until then, log every promotion
-   > manually (who, when, why) in the operator log.
+2. **Set the flag** via the in-app role management (recommended): on the
+   Moderation page, any **staff** member can search a user and grant/revoke
+   the **moderator** role; **staff** roles can only be granted/revoked by
+   the **owner** (the top tier). Every change requires a written reason and
+   is written to the `role_audit` table (who, whom, when, why) — the same
+   accountability the ledger gives deals.
+   - API: `POST /api/mod/manage` `{ userId, role: moderator|staff, grant, reason }`
+     (staff for moderator changes, owner for staff changes).
+   - View current holders + audit trail: `GET /api/mod/roles`.
+   - Find a user to promote: `GET /api/mod/search?q=<name or phone>`.
+   - The `is_owner` flag itself is never changed through the API — only by
+     direct DB update by an operator (first owner is seeded on Lidya).
 3. **Announce expectations** — moderators self-select from the queue; every
    vote and its reasoning is on the permanent ledger, and staff overrides
    require **two independent staff sign-offs** (three for heavy users), each

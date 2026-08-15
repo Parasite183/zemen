@@ -23,7 +23,7 @@ const USERS = [
   { phone: '+251911000001', name: 'Abebe Kebede', category: 'freelance', bio: 'Graphic designer & web developer. Addis Ababa.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000002', name: 'Sara Tesfaye', category: 'trade', bio: 'Small trading — coffee & spices exporter.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000003', name: 'Bekele Alemu', category: 'agriculture', bio: 'Coffee farmer, Jimma region.', verified: 'pending' },
-  { phone: '+251911000004', name: 'Lidya Hailu', category: 'services', bio: 'Platform moderator & staff.', verified: 'verified', verifiedDaysAgo: 100, moderator: true, staff: true },
+  { phone: '+251911000004', name: 'Lidya Hailu', category: 'services', bio: 'Platform owner, moderator & staff.', verified: 'verified', verifiedDaysAgo: 100, moderator: true, staff: true, owner: true },
   { phone: '+251911000005', name: 'Tesfaye Girma', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000006', name: 'Girma Haile', category: 'services', bio: 'Phone repair & electronics.', verified: 'verified', verifiedDaysAgo: 100 },
   { phone: '+251911000007', name: 'Hana Worku', category: 'agriculture', bio: 'Teff & wheat farmer, Arsi.', verified: 'verified', verifiedDaysAgo: 100 },
@@ -57,9 +57,9 @@ export async function runSeed() {
   const ids = {};
   for (const u of USERS) {
     const { lastId } = await db.run(
-      `INSERT INTO users (phone, name, category, bio, id_verification_status, is_moderator, is_staff, report_token, verified_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [u.phone, u.name, u.category, u.bio, u.verified, u.moderator ? 1 : 0, u.staff ? 1 : 0, genRef('RP'), u.verifiedDaysAgo ? daysAgo(u.verifiedDaysAgo) : null, daysAgo(120)]
+      `INSERT INTO users (phone, name, category, bio, id_verification_status, is_moderator, is_staff, is_owner, report_token, verified_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [u.phone, u.name, u.category, u.bio, u.verified, u.moderator ? 1 : 0, u.staff ? 1 : 0, u.owner ? 1 : 0, genRef('RP'), u.verifiedDaysAgo ? daysAgo(u.verifiedDaysAgo) : null, daysAgo(120)]
     );
     ids[u.phone] = lastId;
   }
@@ -233,7 +233,7 @@ export async function runSeed() {
   console.log('    Abebe Kebede   +251 911 000 001  (freelance, verified)');
   console.log('    Sara Tesfaye   +251 911 000 002  (trade, verified)');
   console.log('    Bekele Alemu   +251 911 000 003  (agriculture, pending verification)');
-  console.log('    Lidya Hailu    +251 911 000 004  (moderator & staff)');
+  console.log('    Lidya Hailu    +251 911 000 004  (owner, moderator & staff)');
   console.log('    Tesfaye Girma  +251 911 000 005  (flag example: one-sided pattern)');
   console.log('    Girma Haile    +251 911 000 006  (flag example)');
   console.log('    Hana Worku     +251 911 000 007  (agriculture, verified)');

@@ -22,7 +22,7 @@ export function publicUser(u) {
   return {
     id: u.id, phone: u.phone, name: u.name, category: u.category, bio: u.bio,
     id_verification_status: u.id_verification_status, is_moderator: u.is_moderator,
-    is_staff: u.is_staff, created_at: u.created_at,
+    is_staff: u.is_staff, is_owner: u.is_owner, created_at: u.created_at,
   };
 }
 

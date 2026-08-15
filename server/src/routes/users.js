@@ -127,6 +127,88 @@ router.post('/me/delete', wrap(async (req, res) => {
   ok(res, { deleted: true });
 }));
 
+// ── role management (who becomes a moderator / staff / owner) ────────
+// Moderator flags are granted by staff; staff flags are granted ONLY by
+// an owner (the top tier — there is no higher role). Every change is
+// written to role_audit: who did it, to whom, when, and why, so role
+// changes are as accountable as ledger entries.
+
+/** User rows carrying any role flag, plus recent role-change history. */
+async function roleOverview() {
+  const [roles, audit] = await Promise.all([
+    db.all(
+      `SELECT id, name, phone, is_moderator, is_staff, is_owner, id_verification_status, created_at
+       FROM users WHERE is_moderator = 1 OR is_staff = 1 OR is_owner = 1
+       ORDER BY is_owner DESC, is_staff DESC, is_moderator DESC, id ASC`
+    ),
+    db.all(
+      `SELECT a.*, u.name AS actor_name, t.name AS target_name
+       FROM role_audit a
+       JOIN users u ON u.id = a.actor_id
+       JOIN users t ON t.id = a.target_id
+       ORDER BY a.id DESC LIMIT 50`
+    ),
+  ]);
+  return { roles, audit };
+}
+
+// List everyone holding a role + recent changes. Staff and owners see
+// this; moderators do not (they are not allowed to hand out roles).
+router.get('/mod/roles', requireStaff, wrap(async (req, res) => {
+  ok(res, await roleOverview());
+}));
+
+// Search users by name or phone, so a staff member can find someone to
+// promote. Returns a few lightweight fields only — full profiles stay
+// behind /users/:id.
+router.get('/mod/search', requireStaff, wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return ok(res, { users: [] });
+  const like = `%${q.toLowerCase()}%`;
+  const users = await db.all(
+    `SELECT id, name, phone, is_moderator, is_staff, is_owner, id_verification_status, created_at
+     FROM users WHERE LOWER(name) LIKE ? OR phone LIKE ?
+     ORDER BY (is_owner + is_staff + is_moderator) DESC, id ASC LIMIT 20`,
+    [like, like]
+  );
+  ok(res, { users });
+}));
+
+// Grant or revoke a role. `role` is moderator | staff; `grant` true
+// grants, false revokes; `reason` is recorded in the audit trail.
+// Moderator changes: any staff. Staff changes: owner only. Nobody can
+// change their own role, and the owner flag is never touched here.
+router.post('/mod/manage', requireStaff, wrap(async (req, res) => {
+  const { userId, role, grant, reason } = req.body || {};
+  const targetId = Number(userId);
+  if (!targetId || !['moderator', 'staff'].includes(role)) {
+    throw badRequest('userId and role (moderator|staff) are required', 'bad_role_request');
+  }
+  if (targetId === req.user.id) throw forbidden('You cannot change your own role', 'self_role_change');
+  if (role === 'staff' && !req.user.is_owner) {
+    throw forbidden('Only the owner can grant or revoke staff', 'owner_only');
+  }
+
+  const target = await db.get('SELECT id, is_moderator, is_staff, is_owner FROM users WHERE id = ?', [targetId]);
+  if (!target) throw notFound('User not found');
+
+  const col = role === 'moderator' ? 'is_moderator' : 'is_staff';
+  const currently = target[col] === 1;
+  if (currently === !!grant) {
+    // No-op (already has / already lacks the role) — nothing to record.
+    return ok(res, await roleOverview());
+  }
+
+  await db.run(`UPDATE users SET ${col} = ? WHERE id = ?`, [grant ? 1 : 0, targetId]);
+  await db.run(
+    `INSERT INTO role_audit (actor_id, target_id, action, reason, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [req.user.id, targetId, `${grant ? 'grant' : 'revoke'}_${role}`, String(reason || '').trim().slice(0, 500), nowIso()]
+  );
+  logger.info('role_changed', { actor: req.user.id, target: targetId, role, grant: !!grant });
+  ok(res, await roleOverview());
+}));
+
 // Moderators: re-run the graph/velocity/cluster fraud checks on demand.
 router.post('/mod/fraud/refresh', requireModerator, wrap(async (req, res) => {
   ok(res, await runFraudChecks());

@@ -75,6 +75,11 @@ export const requireStaff = (req, _res, next) => {
   next();
 };
 
+export const requireOwner = (req, _res, next) => {
+  if (!req.user?.is_owner) return next(forbidden('Owner role required'));
+  next();
+};
+
 // ── one-time codes for high-stakes actions ───────────────────────────
 // Distinct from login OTPs (otp_codes.purpose = 'action'): re-auth a
 // user before funding escrow, confirming a large deal, or changing the

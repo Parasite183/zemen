@@ -21,6 +21,7 @@ const TABLES = (idCol) => [
     id_flag_reason TEXT DEFAULT '',               -- e.g. duplicate_id_document / duplicate_id_number
     is_moderator INTEGER DEFAULT 0,
     is_staff INTEGER DEFAULT 0,
+    is_owner INTEGER DEFAULT 0,                -- top tier: the only role that can grant/revoke staff
     report_token TEXT UNIQUE,
     created_at TEXT NOT NULL,
     deleted_at TEXT                             -- set when the account is deleted/anonymised
@@ -37,6 +38,19 @@ const TABLES = (idCol) => [
     file_sha256 TEXT DEFAULT '',                  -- exact byte hash of the uploaded file
     file_path TEXT NOT NULL,
     status TEXT DEFAULT 'pending',                -- pending | approved | rejected | duplicate
+    reason TEXT DEFAULT '',
+    created_at TEXT NOT NULL
+  )`,
+
+  // Role-change audit trail: who promoted/demoted whom, when, and why.
+  // Every moderator/staff/owner flag change goes through the manage
+  // endpoint and lands a row here — the same permanence the ledger gives
+  // deals, applied to role changes.
+  `CREATE TABLE IF NOT EXISTS role_audit (
+    id ${idCol},
+    actor_id INTEGER NOT NULL,
+    target_id INTEGER NOT NULL,
+    action TEXT NOT NULL,                     -- grant_moderator | revoke_moderator | grant_staff | revoke_staff
     reason TEXT DEFAULT '',
     created_at TEXT NOT NULL
   )`,
@@ -221,6 +235,19 @@ export async function initSchema() {
   await migrateDisputeColumns();
   await migrateDeletionColumn();
   await migrateEscrowColumns();
+  await migrateRoleColumns();
+}
+
+/** DBs created before the owner role existed need users.is_owner. */
+async function migrateRoleColumns() {
+  if (db.dialect === 'pg') {
+    await db.run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner INTEGER DEFAULT 0`);
+    return;
+  }
+  const cols = await db.all(`SELECT name FROM pragma_table_info('users')`);
+  if (!cols.some((c) => c.name === 'is_owner')) {
+    await db.run(`ALTER TABLE users ADD COLUMN is_owner INTEGER DEFAULT 0`);
+  }
 }
 
 /** DBs created before account deletion existed need users.deleted_at. */

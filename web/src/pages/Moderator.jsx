@@ -5,7 +5,7 @@ import { api, useUploadUrl } from '../api.js';
 import { useAuth } from '../App.jsx';
 import { useI18n } from '../i18n/index.jsx';
 import { Card, Spinner, Empty, StatusChip, Button, VerifiedBadge } from '../components/ui.jsx';
-import { money, timeAgo } from '../lib.js';
+import { money, timeAgo, maskPhone } from '../lib.js';
 
 // Short human signal for each flag code, so review is fast and explainable.
 const FLAG_SIGNAL = {
@@ -83,6 +83,11 @@ export default function Moderator() {
   const { user } = useAuth();
   const [queue, setQueue] = useState(null);
   const [review, setReview] = useState(null);
+  const [roles, setRoles] = useState({ roles: [], audit: [] });
+  const [roleSearch, setRoleSearch] = useState('');
+  const [roleResults, setRoleResults] = useState([]);
+  const [roleReason, setRoleReason] = useState('');
+  const [roleBusy, setRoleBusy] = useState('');
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
 
@@ -94,7 +99,49 @@ export default function Moderator() {
     ]).catch((e) => setError(e.message));
   };
 
+  // Role overview is staff-only (owners can additionally edit staff).
+  const loadRoles = () => {
+    if (!user?.is_staff) return;
+    api('/api/mod/roles').then(setRoles).catch(() => {});
+  };
+
   useEffect(() => { load(); }, []);
+  useEffect(() => { loadRoles(); }, [user?.is_staff]);
+
+  // Role change: grant/revoke moderator (any staff) or staff (owner only).
+  const changeRole = async (target, role, grant) => {
+    const reason = roleReason.trim();
+    if (!reason) {
+      setError(t('mod.rolesReasonPh'));
+      return;
+    }
+    setRoleBusy(`${target.id}:${role}:${grant}`);
+    setError('');
+    try {
+      const res = await api('/api/mod/manage', { method: 'POST', body: { userId: target.id, role, grant, reason } });
+      setRoles(res);
+      setRoleReason('');
+      setRoleResults([]);
+      setRoleSearch('');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRoleBusy('');
+    }
+  };
+
+  const searchUsers = async (e) => {
+    e.preventDefault();
+    const q = roleSearch.trim();
+    if (!q) return;
+    try {
+      const res = await api(`/api/mod/search?q=${encodeURIComponent(q)}`);
+      setRoleResults(res.users || []);
+      setError('');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   const refreshFraud = async () => {
     setError('');
@@ -199,6 +246,113 @@ export default function Moderator() {
           </div>
         )}
       </div>
+
+      {/* moderator & staff role management (staff can see, owner edits staff) */}
+      {canDecide && (
+        <div>
+          <h2 className="mb-3 text-sm font-bold uppercase tracking-wider text-ink-soft">{t('mod.rolesTitle')} · {roles.roles.length}</h2>
+          <Card>
+            {/* find someone to promote */}
+            <form onSubmit={searchUsers} className="flex gap-2">
+              <input
+                value={roleSearch}
+                onChange={(e) => setRoleSearch(e.target.value)}
+                placeholder={t('mod.rolesSearchPh')}
+                className="flex-1 rounded-lg border border-line bg-paper px-3 py-2 text-sm outline-none focus:border-brand"
+              />
+              <Button type="submit" size="sm" variant="secondary">{t('mod.rolesSearch')}</Button>
+            </form>
+            <input
+              value={roleReason}
+              onChange={(e) => setRoleReason(e.target.value)}
+              placeholder={t('mod.rolesReasonPh')}
+              className="mt-2 w-full rounded-lg border border-line bg-paper px-3 py-2 text-xs outline-none focus:border-brand"
+            />
+
+            {roleResults.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {roleResults.map((u) => (
+                  <div key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-paper px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold">{u.name || '—'}</div>
+                      <div className="text-xs text-ink-soft">{maskPhone(u.phone)} · {u.is_owner ? t('mod.roleOwner') : u.is_staff ? t('mod.roleStaff') : u.is_moderator ? t('mod.roleModerator') : ''}</div>
+                    </div>
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button size="sm" onClick={() => changeRole(u, 'moderator', true)} disabled={!!u.is_moderator || roleBusy === `${u.id}:moderator:true`}>
+                        {t('mod.rolesPromote')}
+                      </Button>
+                      <Button size="sm" variant="danger" onClick={() => changeRole(u, 'moderator', false)} disabled={!u.is_moderator || roleBusy === `${u.id}:moderator:false`}>
+                        {t('mod.rolesDemote')}
+                      </Button>
+                      {user?.is_owner && (
+                        <>
+                          <Button size="sm" variant="secondary" onClick={() => changeRole(u, 'staff', true)} disabled={!!u.is_staff || roleBusy === `${u.id}:staff:true`}>
+                            {t('mod.rolesMakeStaff')}
+                          </Button>
+                          <Button size="sm" variant="danger" onClick={() => changeRole(u, 'staff', false)} disabled={!u.is_staff || roleBusy === `${u.id}:staff:false`}>
+                            {t('mod.rolesRemoveStaff')}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {roleSearch && roleResults.length === 0 && <p className="mt-3 text-xs text-ink-soft">{t('mod.rolesNone')}</p>}
+
+            {/* current role holders */}
+            <div className="mt-4 space-y-1.5">
+              {roles.roles.map((u) => (
+                <div key={u.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-paper px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold">
+                      {u.name || '—'}
+                      {u.id === user?.id && <span className="ml-1.5 text-xs font-medium text-brand">(you)</span>}
+                    </div>
+                    <div className="text-xs text-ink-soft">
+                      {maskPhone(u.phone)} · {[u.is_owner && t('mod.roleOwner'), u.is_staff && t('mod.roleStaff'), u.is_moderator && t('mod.roleModerator')].filter(Boolean).join(' · ') || '—'}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-1.5">
+                    <Button size="sm" variant="secondary" onClick={() => changeRole(u, 'moderator', !u.is_moderator)} disabled={u.id === user?.id || u.is_owner || roleBusy === `${u.id}:moderator:${!u.is_moderator}`}>
+                      {u.is_moderator ? t('mod.rolesDemote') : t('mod.rolesPromote')}
+                    </Button>
+                    {user?.is_owner && (
+                      <Button size="sm" variant={u.is_staff ? 'danger' : 'secondary'} onClick={() => changeRole(u, 'staff', !u.is_staff)} disabled={u.id === user?.id || u.is_owner || roleBusy === `${u.id}:staff:${!u.is_staff}`}>
+                        {u.is_staff ? t('mod.rolesRemoveStaff') : t('mod.rolesMakeStaff')}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {roles.roles.length === 0 && <p className="text-xs text-ink-soft">{t('mod.rolesNone')}</p>}
+            </div>
+
+            {/* audit trail — every change is recorded */}
+            <div className="mt-4 border-t border-line pt-3">
+              <div className="mb-2 text-xs font-bold uppercase tracking-wider text-ink-soft">{t('mod.rolesRecent')}</div>
+              {roles.audit.length === 0 ? (
+                <p className="text-xs text-ink-soft">{t('mod.rolesNoChanges')}</p>
+              ) : (
+                <ul className="space-y-1">
+                  {roles.audit.slice(0, 10).map((a) => (
+                    <li key={a.id} className="text-xs text-ink-soft">
+                      {t(a.action.startsWith('grant') ? 'mod.roleGranted' : 'mod.roleRevoked', {
+                        actor: a.actor_name,
+                        target: a.target_name,
+                        role: a.action.replace(/grant_|revoke_/, ''),
+                      })}
+                      {a.reason && <span className="text-ink-soft"> — “{a.reason}”</span>}
+                      <span className="ml-1 text-[10px]">· {timeAgo(a.created_at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* fraud clusters */}
       <div>

@@ -47,7 +47,7 @@ async function main() {
   const TABLES = [
     'users', 'otp_codes', 'transactions', 'ledger',
     'disputes', 'dispute_statements', 'dispute_evidence',
-    'dispute_votes', 'dispute_moderator_log', 'dispute_staff_overrides', 'reputation_scores',
+    'dispute_votes', 'dispute_moderator_log', 'dispute_staff_overrides', 'role_audit', 'reputation_scores',
   ];
   const orderBy = { reputation_scores: 'user_id ASC' }; // no `id` column
   for (const t of TABLES) {
