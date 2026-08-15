@@ -155,6 +155,17 @@ const africastalkingProvider = {
     }
     return this.creds();
   },
+  // AT's two environments: sandbox credentials (username exactly
+  // 'sandbox', keys from the Sandbox app) only authenticate against
+  // api.sandbox.africastalking.com — sending them to the live host is
+  // a 401. Any other username is a live account and uses the live host.
+  // Same convention AT's own SDKs use (sandbox: true).
+  baseUrl() {
+    const { username } = this.creds();
+    return String(username).trim().toLowerCase() === 'sandbox'
+      ? 'https://api.sandbox.africastalking.com'
+      : 'https://api.africastalking.com';
+  },
   async sendOtp(phone, code) {
     return this._send(phone, `Zemen verification code: ${code}`);
   },
@@ -164,7 +175,7 @@ const africastalkingProvider = {
   async _send(phone, message) {
     const { apiKey, username, from } = this.assertCreds();
     return withRetries(async () => {
-      const res = await fetch('https://api.africastalking.com/version1/messaging', {
+      const res = await fetch(`${this.baseUrl()}/version1/messaging`, {
         method: 'POST',
         headers: { apiKey, 'content-type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
         // enqueue=1 moves the message into AT's queue and returns an
@@ -208,7 +219,7 @@ const africastalkingProvider = {
     const { apiKey, username } = this.creds();
     if (!apiKey || !username) return { ok: false, recipients: [] };
     try {
-      const res = await fetch(`https://api.africastalking.com/version1/messaging?username=${encodeURIComponent(username)}&to=${encodeURIComponent(phone)}`, {
+      const res = await fetch(`${this.baseUrl()}/version1/messaging?username=${encodeURIComponent(username)}&to=${encodeURIComponent(phone)}`, {
         headers: { apiKey, Accept: 'application/json' },
       });
       if (!res.ok) return { ok: false, recipients: [] };

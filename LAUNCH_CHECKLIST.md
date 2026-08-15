@@ -68,10 +68,15 @@ env vars to the Worker); non-secret vars live in `wrangler.jsonc` `vars`.
   > and that the v1 transfers payload matches your account's bank list.
 - **SMS — Africa's Talking (or Twilio).** Create an AT account (sandbox → live
   production shortcode/long code). Set the sender in `AFRICASTALKING_FROM`.
-  Enable the **delivery-report webhook** in the AT dashboard if you want
-  per-message delivery status; the code already parses the send response
-  (non-101 `statusCode` → loud `sms_delivery_failed` error + retries with
-  backoff). Send failures are logged as `sms_delivery_failed` events.
+  **Sandbox vs live hosts:** the provider routes automatically by username —
+  `AFRICASTALKING_USERNAME=sandbox` (with the Sandbox app's API key) talks to
+  `api.sandbox.africastalking.com`; any other username (live account) talks to
+  `api.africastalking.com`. Mixing them up is a 401 `Invalid auth` — sandbox
+  keys only authenticate against the sandbox host. Enable the
+  **delivery-report webhook** in the AT dashboard if you want per-message
+  delivery status; the code already parses the send response (non-101
+  `statusCode` → loud `sms_delivery_failed` error + retries with backoff).
+  Send failures are logged as `sms_delivery_failed` events.
 - **Storage — Cloudflare R2.** The `zemen-uploads` bucket must stay
   **private** (default). Uploads are served only through the Worker's
   access-gated `/uploads` route (owner/staff for ID documents;

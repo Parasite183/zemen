@@ -216,6 +216,36 @@ test('africastalking refuses to send without credentials', async () => {
   }
 });
 
+test('africastalking routes sandbox credentials to the sandbox host', async () => {
+  // AT's convention: username exactly 'sandbox' authenticates only
+  // against api.sandbox.africastalking.com — a sandbox key sent to the
+  // live host is a 401. Route by username like AT's own SDKs do.
+  const { AFRICASTALKING_USERNAME } = process.env;
+  process.env.AFRICASTALKING_USERNAME = 'sandbox';
+  let hitUrl = '';
+  mockFetch(async (url) => {
+    hitUrl = url;
+    return jsonRes({ SMSMessageData: { Recipients: [{ statusCode: 101, messageId: 'mid-sandbox' }] } });
+  });
+  try {
+    const out = await africastalkingProvider.sendOtp('+251911000001', '222222');
+    assert.ok(hitUrl.startsWith('https://api.sandbox.africastalking.com/version1/messaging'), hitUrl);
+    assert.equal(out.messageId, 'mid-sandbox');
+  } finally {
+    process.env.AFRICASTALKING_USERNAME = AFRICASTALKING_USERNAME;
+  }
+
+  // A live (non-sandbox) username goes to the live host.
+  process.env.AFRICASTALKING_USERNAME = 'zemen-live';
+  try {
+    await africastalkingProvider.sendOtp('+251911000001', '333333');
+    assert.ok(hitUrl.startsWith('https://api.africastalking.com/version1/messaging'), hitUrl);
+  } finally {
+    process.env.AFRICASTALKING_USERNAME = AFRICASTALKING_USERNAME;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 // ── webhook → escrow end-to-end ─────────────────────────────────────
 test('a verified charge.success webhook flips escrow pending → funded (idempotent)', async () => {
   await initDb();
