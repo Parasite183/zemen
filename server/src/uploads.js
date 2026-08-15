@@ -108,23 +108,28 @@ function safeName(file) {
 }
 
 /** R2-backed storage engine (Cloudflare Workers). */
-function r2Storage(subdir) {
+export function r2Storage(subdir) {
   return {
-    _handleFile(req, file, cb) {
+    async _handleFile(req, file, cb) {
       const bucket = (globalThis.__ZEMEN_BINDINGS || {}).UPLOADS;
       if (!bucket) return cb(new Error('R2 bucket not configured'));
-      file.filename = safeName(file);
-      const key = `${subdir}/${file.filename}`;
-      // On workerd, Node streams are web streams under the hood, so the
-      // busboy file stream can be handed to R2.put directly.
-      const body = typeof file.stream?.toWeb === 'function' ? file.stream.toWeb() : file.stream;
-      bucket
-        .put(key, body, { httpMetadata: { contentType: file.mimetype || 'application/octet-stream' } })
-        .then(() => {
-          file.key = key;
-          cb(null, { size: file.size || 0 });
-        })
-        .catch((err) => cb(err));
+      try {
+        file.filename = safeName(file);
+        const key = `${subdir}/${file.filename}`;
+        // R2.put requires a real web body (ReadableStream / ArrayBuffer /
+        // string / Blob) — a Node stream is rejected even under
+        // nodejs_compat ("parameter 2 is not of type ..."). Buffer the
+        // whole file into memory (multer already caps it at 10 MB) and
+        // hand R2 the exact bytes.
+        const chunks = [];
+        for await (const chunk of file.stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const body = Buffer.concat(chunks);
+        await bucket.put(key, body, { httpMetadata: { contentType: file.mimetype || 'application/octet-stream' } });
+        file.key = key;
+        cb(null, { size: body.length });
+      } catch (err) {
+        cb(err);
+      }
     },
     _removeFile(req, file, cb) {
       const bucket = (globalThis.__ZEMEN_BINDINGS || {}).UPLOADS;

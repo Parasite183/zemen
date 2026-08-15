@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 
 const { serverRoot } = await import('../src/config.js');
-const { readUploadedBytes, sniffMime, assertUploadContent } = await import('../src/uploads.js');
+const { readUploadedBytes, sniffMime, assertUploadContent, r2Storage } = await import('../src/uploads.js');
 
 // Regression test for the ID-document upload flow.
 //
@@ -38,6 +39,66 @@ test('readUploadedBytes throws when the resolved file does not exist', async () 
     readUploadedBytes({ path: '/uploads/ids/does-not-exist.png' }),
     (e) => e.code === 'ENOENT'
   );
+});
+
+// ── R2 storage engine (Cloudflare Workers) ───────────────────────────
+// Regression test for the live upload 500: multer hands the route a
+// Node stream, but R2.put rejects non-web bodies ("parameter 2 is not of
+// type 'JsReadableStream or ArrayBuffer ...'"). The engine must buffer
+// the stream into exact bytes before putting. The test simulates the
+// workerd environment with a fake bucket and a Node Readable (exactly
+// what multer produces on the Worker).
+test('r2Storage buffers the incoming stream into a valid R2 body', async () => {
+  const puts = [];
+  const fakeBucket = {
+    put: async (key, body, meta) => { puts.push({ key, body, meta }); },
+    delete: async () => {},
+  };
+  const prev = globalThis.__ZEMEN_BINDINGS;
+  globalThis.__ZEMEN_BINDINGS = { UPLOADS: fakeBucket };
+  try {
+    const engine = r2Storage('ids');
+    const file = {
+      stream: Readable.from([Buffer.from('fake national ID bytes')]),
+      mimetype: 'image/png',
+      originalname: 'scan.png',
+      size: 0,
+    };
+    const done = new Promise((resolve, reject) => engine._handleFile({}, file, (err) => err ? reject(err) : resolve()));
+    await done;
+
+    assert.equal(puts.length, 1, 'one R2 put for the upload');
+    const { key, body, meta } = puts[0];
+    assert.match(key, /^ids\//, 'object key lives under the ids subdir');
+    assert.equal(body.toString(), 'fake national ID bytes', 'R2 received the exact file bytes');
+    assert.equal(meta.httpMetadata.contentType, 'image/png', 'content type preserved');
+    assert.equal(file.key, key, 'file.key is set so readUploadedBytes can read it back');
+  } finally {
+    globalThis.__ZEMEN_BINDINGS = prev;
+  }
+});
+
+test('r2Storage surfaces a bucket failure through the multer callback', async () => {
+  const failingBucket = {
+    put: async () => { throw new Error('bucket is on fire'); },
+    delete: async () => {},
+  };
+  const prev = globalThis.__ZEMEN_BINDINGS;
+  globalThis.__ZEMEN_BINDINGS = { UPLOADS: failingBucket };
+  try {
+    const engine = r2Storage('ids');
+    const file = {
+      stream: Readable.from([Buffer.from('bytes')]),
+      mimetype: 'image/png',
+      originalname: 'scan.png',
+      size: 0,
+    };
+    const err = await new Promise((resolve) => engine._handleFile({}, file, (e) => resolve(e)));
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /bucket is on fire/);
+  } finally {
+    globalThis.__ZEMEN_BINDINGS = prev;
+  }
 });
 
 // ── magic-byte sniffing (launch checklist §Uploads) ─────────────────
