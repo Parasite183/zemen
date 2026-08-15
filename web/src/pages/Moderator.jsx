@@ -27,19 +27,35 @@ const DOC_TYPE = {
 // Uploads are access-gated (owner/staff only) — a raw <img src> can't
 // send the auth header and 401s. Fetch the file with the token and show
 // it as a blob URL instead. Files the browser can't preview inline
-// (PDF, HEIC/HEIF iPhone photos) get an open-link; images get a
-// thumbnail.
+// (PDF, HEIC/HEIF iPhone photos) get an expandable open-link; images
+// get a thumbnail. PDFs preview inline in the card (same tab).
 function DocThumb({ path, name }) {
   const url = useUploadUrl(path);
+  const [open, setOpen] = useState(false);
   if (!path) return null;
   const isPdf = /pdf$/i.test(path);
   const isHeic = /heic|heif$/i.test(path);
   if (!url) return <div className="mt-2 h-24 w-32 animate-pulse rounded-lg bg-paper" />;
   if (isPdf || isHeic) {
     return (
-      <a href={url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/40">
-        <FileText size={13} /> {isPdf ? 'Open PDF' : 'Open image'}
-      </a>
+      <div className="mt-2">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-line bg-paper px-3 py-1.5 text-xs font-semibold text-brand hover:bg-brand-soft/40"
+        >
+          <FileText size={13} /> {isPdf ? (open ? 'Hide PDF' : 'Open PDF') : 'Open image'}
+        </button>
+        {open && (
+          isPdf ? (
+            <iframe src={url} title={`${name} document`} className="mt-2 h-96 w-full rounded-lg border border-line bg-paper" />
+          ) : (
+            <a href={url} target="_blank" rel="noreferrer" className="mt-2 block">
+              <img src={url} alt={`${name} document`} className="max-h-36 rounded-lg border border-line bg-paper object-contain" />
+            </a>
+          )
+        )}
+      </div>
     );
   }
   return (
